@@ -4,7 +4,6 @@ const express = require('express');
 const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const RouterOSAPI = require('node-routeros').RouterOSAPI;
-
 const config = require('./config');
 const { scanSemuaOlt } = require('./oltService');
 
@@ -55,7 +54,6 @@ client.on('disconnected', (reason) => {
 async function connectMikrotik(serverKey) {
     const targetServer = config.servers[serverKey];
     if (!targetServer) throw new Error(`Server "${serverKey}" tidak ditemukan`);
-    
     const api = new RouterOSAPI({
         host: targetServer.mikrotik.host,
         port: targetServer.mikrotik.port,
@@ -63,7 +61,6 @@ async function connectMikrotik(serverKey) {
         password: targetServer.mikrotik.pass,
         timeout: 15
     });
-    
     try {
         await api.connect();
         return { api, targetServer };
@@ -71,14 +68,12 @@ async function connectMikrotik(serverKey) {
         throw new Error(`Gagal konek MikroTik ${targetServer.label}. Cek port API.`);
     }
 }
-
 async function getUserFromMikrotik(api, username) {
     const secrets = await api.write('/ppp/secret/print');
     const userObj = secrets.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
     if (!userObj) throw new Error(`User "${username}" tidak ditemukan`);
     return userObj;
 }
-
 async function getActiveUserFromMikrotik(api, username) {
     const activeUsers = await api.write('/ppp/active/print');
     return activeUsers.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
@@ -93,7 +88,6 @@ client.on('message_create', async (msg) => {
         const args = text.split(/\s+/);
         const command = args[0]?.toLowerCase();
 
-        // Perintah Publik
         if (command === 'ping') { await msg.reply('pong 🏓'); return; }
         
         if (command === '!menu') {
@@ -107,10 +101,9 @@ client.on('message_create', async (msg) => {
             return;
         }
 
-        // Perintah !cek dan !aktifkan (BISA DIAKSES SIAPA SAJA)
         if (['!cek', '!aktifkan'].includes(command)) {
-            
             if (args.length < 3) {
+                // ✅ FIX: Backtick sudah ditutup dengan benar
                 await msg.reply(`❌ *Format Salah*\n\nGunakan: \`${command} [mikrotik] [username]\`\nContoh: \`${command} cibarola liacahyani\``);
                 return;
             }
@@ -124,13 +117,11 @@ client.on('message_create', async (msg) => {
                 return;
             }
 
-            // Log untuk monitoring (opsional)
             console.log(`\n📨 [REQUEST] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username}`);
 
             if (command === '!cek') await handleCekRedaman(msg, serverKey, username);
             else if (command === '!aktifkan') await handleAktivasi(msg, serverKey, username);
         }
-
     } catch (err) {
         console.error('❌ Handler Error:', err);
         try { await msg.reply(`❌ *Terjadi Kesalahan*\n\n${err.message}`); } catch (e) {}
@@ -145,7 +136,6 @@ async function handleCekRedaman(msg, serverKey, username) {
     try {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
-
         await msg.reply(`🔍 Mencari *${username}* di MikroTik *${targetServer.label}*...`);
         const userObj = await getUserFromMikrotik(api, username);
         
@@ -162,7 +152,6 @@ async function handleCekRedaman(msg, serverKey, username) {
         await msg.reply(`📡 *MAC Ditemukan:*\n\`${mac}\`\n\n_Menyisir OLT di cabang ${targetServer.label}..._`);
 
         const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
-        
         await msg.reply(
             `📊 *Hasil Cek Redaman OLT*\n\n` +
             `👤 *Pelanggan:* ${username}\n` +
@@ -170,7 +159,6 @@ async function handleCekRedaman(msg, serverKey, username) {
             `🔒 *MAC:* \`${mac}\`\n\n` +
             `${hasilOlt}`
         );
-
     } catch (err) {
         await msg.reply(`❌ *Gagal Cek Redaman*\n\n${err.message}`);
     } finally {
@@ -186,7 +174,6 @@ async function handleAktivasi(msg, serverKey, username) {
     try {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
-
         await msg.reply(`⏳ *Memproses Open Isolir*\n\n👤 User: ${username}\n💻 Server: ${targetServer.label}\n\n_Mohon tunggu..._`);
         
         const userObj = await getUserFromMikrotik(api, username);
@@ -216,7 +203,6 @@ async function handleAktivasi(msg, serverKey, username) {
             const mac = rawMac.trim().toLowerCase();
             report += `✂️ *MAC OLT:* \`${mac}\`\n\n🔍 _Menyisir OLT otomatis..._`;
             await msg.reply(report);
-            
             const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
             await msg.reply(
                 `✨ *RnB Network - Final Report*\n\n` +
@@ -244,5 +230,4 @@ process.on('uncaughtException', err => {
     if (err.name === 'RosException' && err.message.includes('Timed out')) return;
     console.error('❌ UNCAUGHT:', err);
 });
-
 client.initialize().catch(console.error);
