@@ -1,4 +1,4 @@
-// oltService.js - FINAL CLEAN VERSION
+// oltService.js - FINAL CLEAN VERSION (NO BASIC AUTH, DOUBLE LOGIN FIX)
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -61,13 +61,10 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
         const loginRes = await axios.post(
             `http://${oltConfig.ip}:${oltConfig.port}/login/Auth`,
             { userName: oltConfig.user || 'admin', password: passwordBase64 },
-            { headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, timeout: 10000 }
+            { headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, timeout: 15000 }
         );
 
-        if (loginRes.data.errCode !== 'success') {
-            console.log(`   ❌ Login gagal: ${JSON.stringify(loginRes.data)}`);
-            throw new Error('Login gagal');
-        }
+        if (loginRes.data.errCode !== 'success') throw new Error('Login gagal');
         console.log(`   ✅ Login sukses`);
 
         const cookies = loginRes.headers['set-cookie'];
@@ -75,7 +72,6 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
         if (cookies) {
             sessionCookie = cookies.map(c => c.split(';')[0]).join('; ');
         }
-        console.log(`   🍪 Cookie: ${sessionCookie ? 'Berhasil diambil' : 'KOSONG!'}`);
 
         const totalPon = oltConfig.total_pon || 4;
         for (let i = 1; i <= totalPon; i++) {
@@ -115,7 +111,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
     }
 }
 
-// 3. Hioso (Puppeteer) - FIXED (TANPA page.authenticate)
+// 3. Hioso (Puppeteer) - DOUBLE LOGIN WEB FORM FIX
 async function cekRedamanHioso(oltConfig, mac) {
     let searchMac = mac.substring(0, 16);
     if (oltConfig.label.includes('Cibarola') || oltConfig.label.includes('8Pon')) {
@@ -131,38 +127,32 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
-        page.setDefaultTimeout(30000);
-        page.setDefaultNavigationTimeout(30000);
+        page.setDefaultTimeout(35000);
+        page.setDefaultNavigationTimeout(35000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
-        // ❌ JANGAN PERNAH MENAMBAHKAN page.authenticate() DI SINI!
-        // OLT Hioso menggunakan Web Form Login, BUKAN HTTP Basic Auth.
+        // ❌ TIDAK ADA page.authenticate() DI SINI!
+        // OLT Hioso menggunakan Web Form Login 2x, bukan HTTP Basic Auth.
 
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
-        
-        const GOTO_TIMEOUT = 25000;
-        const gotoPromise = page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT });
-        const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error(`Timeout mengakses OLT setelah ${GOTO_TIMEOUT/1000} detik.`)), GOTO_TIMEOUT + 1000)
-        );
-        
-        await Promise.race([gotoPromise, timeoutPromise]);
-        console.log(`   ✅ Halaman utama berhasil dimuat`);
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
+        // FASE LOGIN PERTAMA
         if (await page.$('#a')) {
-            console.log(`   🔑 Mengisi form login...`);
+            console.log(`   🔑 Mengisi form login pertama...`);
             await page.type('#a', user);
             await page.type('#b', pass);
             
             await Promise.all([
-                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
+                page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
                 page.click('input[type="button"]')
             ]);
         }
 
+        // FASE LOGIN KEDUA (DOUBLE LOGIN)
         try {
             await page.waitForSelector('#a', { visible: true, timeout: 8000 });
             console.log(`   ⚠️ Terdeteksi Double Login, mengeksekusi login kedua...`);
@@ -175,18 +165,19 @@ async function cekRedamanHioso(oltConfig, mac) {
             await page.type('#b', pass);
             
             await Promise.all([
-                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
+                page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
                 page.click('input[type="button"]')
             ]);
         } catch (e) {
-            console.log(`   ✅ Login sukses, masuk ke hal aman data.`);
+            console.log(`   ✅ Login sukses, masuk ke halaman aman data.`);
         }
 
+        // FASE EKSTRAKSI DATA
         if (oltConfig.iframe) {
-            console.log(`   Mode: Double Login + Iframe`);
+            console.log(`   Mode: Iframe`);
             
             let leftFrame = null;
-            for (let attempt = 1; attempt <= 10; attempt++) {
+            for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
                 leftFrame = frames.find(f => f.name() === 'leftFrame' || (f.url() && (f.url().includes('menu') || f.url().includes('left'))));
                 if (leftFrame) break;
@@ -201,7 +192,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             }).catch(() => console.log('   ⚠️ Gagal klik All ONU, tapi dilanjutkan...'));
             
             let mainFrame = null;
-            for (let attempt = 1; attempt <= 10; attempt++) {
+            for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
                 mainFrame = frames.find(f => f.name() === 'mainFrame' || (f.url() && f.url().includes('onu')));
                 if (mainFrame) break;
@@ -210,7 +201,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             if (!mainFrame) throw new Error('Gagal memuat tabel (mainFrame tidak ditemukan)');
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
-            await mainFrame.waitForSelector('table tr', { timeout: 20000 });
+            await mainFrame.waitForSelector('table tr', { timeout: 30000 });
 
             await mainFrame.evaluate(() => {
                 if (typeof setNumPerPage === 'function') setNumPerPage(300);
@@ -224,7 +215,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                 }
             }).catch(() => {});
             
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 3000));
 
             const rxPowerResult = await mainFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:.-]/g, '').toLowerCase();
@@ -248,26 +239,22 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
         } else {
             console.log(`   Mode: Single Login + Direct URL`);
-            
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded' });
             
             let targetFrame = page;
             for (let i = 0; i < 5; i++) {
                 const frames = page.frames();
-                if (frames.length > 1) {
-                    targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
-                }
+                if (frames.length > 1) targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
                 if (targetFrame) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
-            await targetFrame.waitForSelector('table tr', { timeout: 20000 });
+            await targetFrame.waitForSelector('table tr', { timeout: 30000 });
 
             const rxPowerResult = await targetFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
                 const rows = Array.from(document.querySelectorAll('table tr'));
-                
                 for (let row of rows) {
                     const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
                     if (rowText.includes(cleanTarget)) {
@@ -310,11 +297,8 @@ async function scanSemuaOlt(oltList, mac) {
         console.log(`\n⚡ Menjalankan ${axiosOlts.length} HSAirpo secara paralel...`);
         const axiosPromises = axiosOlts.map(async (olt) => {
             let hasil = null;
-            if (olt.method === 'cibarola') {
-                hasil = await cekRedamanHSAirpoCibarola(olt, mac);
-            } else {
-                hasil = await cekRedamanHSAirpoAPI(olt, mac);
-            }
+            if (olt.method === 'cibarola') hasil = await cekRedamanHSAirpoCibarola(olt, mac);
+            else hasil = await cekRedamanHSAirpoAPI(olt, mac);
             return { olt, hasil };
         });
 
@@ -344,9 +328,7 @@ async function scanSemuaOlt(oltList, mac) {
     console.log(`✅ SCAN SELESAI!`);
     console.log(`========================================\n`);
 
-    if (hasilAkhir.length === 0) {
-        return '⚠️ ONU tidak ditemukan di OLT manapun pada cabang ini.';
-    }
+    if (hasilAkhir.length === 0) return '⚠️ ONU tidak ditemukan di OLT manapun pada cabang ini.';
     return hasilAkhir.join('\n');
 }
 
