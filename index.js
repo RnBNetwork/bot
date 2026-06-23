@@ -85,7 +85,32 @@ async function getActiveUserFromMikrotik(api, username) {
 }
 
 // ==========================================
-// 5. MESSAGE HANDLER (PUBLIC ACCESS)
+// 5. SISTEM ANTREAN (QUEUE) - BARU!
+// ==========================================
+const taskQueue = [];
+let isProcessingQueue = false;
+
+async function processQueue() {
+    if (isProcessingQueue || taskQueue.length === 0) return;
+    isProcessingQueue = true;
+    
+    while (taskQueue.length > 0) {
+        const job = taskQueue.shift();
+        try {
+            if (job.command === '!cek') {
+                await handleCekRedaman(job.msg, job.serverKey, job.username);
+            } else if (job.command === '!aktifkan') {
+                await handleAktivasi(job.msg, job.serverKey, job.username);
+            }
+        } catch (err) {
+            console.error('❌ Queue job error:', err);
+        }
+    }
+    isProcessingQueue = false;
+}
+
+// ==========================================
+// 6. MESSAGE HANDLER
 // ==========================================
 client.on('message_create', async (msg) => {
     try {
@@ -93,7 +118,6 @@ client.on('message_create', async (msg) => {
         const args = text.split(/\s+/);
         const command = args[0]?.toLowerCase();
 
-        // Perintah Publik
         if (command === 'ping') { await msg.reply('pong 🏓'); return; }
         
         if (command === '!menu') {
@@ -107,9 +131,7 @@ client.on('message_create', async (msg) => {
             return;
         }
 
-        // Perintah !cek dan !aktifkan (BISA DIAKSES SIAPA SAJA)
         if (['!cek', '!aktifkan'].includes(command)) {
-            
             if (args.length < 3) {
                 await msg.reply(`❌ *Format Salah*\n\nGunakan: \`${command} [mikrotik] [username]\`\nContoh: \`${command} cibarola liacahyani\``);
                 return;
@@ -124,21 +146,26 @@ client.on('message_create', async (msg) => {
                 return;
             }
 
-            // Log untuk monitoring (opsional)
-            console.log(`\n📨 [REQUEST] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username}`);
+            // Hitung posisi antrean
+            const position = taskQueue.length + (isProcessingQueue ? 1 : 0);
+            if (position > 0) {
+                await msg.reply(`⏳ *Sistem Sibuk*.\nPermintaan masuk ke antrean *(Posisi #${position})*.\nMohon bersabar, bot akan otomatis memprosesnya...`);
+            }
 
-            if (command === '!cek') await handleCekRedaman(msg, serverKey, username);
-            else if (command === '!aktifkan') await handleAktivasi(msg, serverKey, username);
+            console.log(`\n📨 [REQUEST] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username} (Antrean #${position})`);
+            
+            // Masukkan ke antrean lalu jalankan
+            taskQueue.push({ command, msg, serverKey, username });
+            processQueue();
         }
 
     } catch (err) {
         console.error('❌ Handler Error:', err);
-        try { await msg.reply(`❌ *Terjadi Kesalahan*\n\n${err.message}`); } catch (e) {}
     }
 });
 
 // ==========================================
-// 6. HANDLER CEK REDAMAN
+// 7. HANDLER CEK REDAMAN
 // ==========================================
 async function handleCekRedaman(msg, serverKey, username) {
     let api;
@@ -179,7 +206,7 @@ async function handleCekRedaman(msg, serverKey, username) {
 }
 
 // ==========================================
-// 7. HANDLER AKTIVASI
+// 8. HANDLER AKTIVASI
 // ==========================================
 async function handleAktivasi(msg, serverKey, username) {
     let api;
@@ -237,7 +264,7 @@ async function handleAktivasi(msg, serverKey, username) {
 }
 
 // ==========================================
-// 8. ERROR HANDLING
+// 9. ERROR HANDLING
 // ==========================================
 process.on('unhandledRejection', err => console.error('❌ UNHANDLED:', err));
 process.on('uncaughtException', err => {
