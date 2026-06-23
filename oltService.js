@@ -1,4 +1,4 @@
-// oltService.js - STABLE & FIXED VERSION
+// oltService.js - STABLE & UPDATED VERSION
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -10,7 +10,7 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (API)...`);
     try {
         const searchMac = mac.substring(0, 16);
-        console.log(`MAC dicari: ${searchMac}`);
+        console.log(`   MAC dicari: ${searchMac}`);
 
         const username = oltConfig.user || 'root';
         const password = oltConfig.pass || 'admin';
@@ -19,7 +19,7 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
 
         const loginRes = await axios.post(
             `http://${oltConfig.ip}:${oltConfig.port}/userlogin?form=login`,
-            { method: "set", param: { name: username, key, value, captcha_v: " ", captcha_f: " " } },
+            { method: "set", param: { name: username, key, value, captcha_v: "", captcha_f: "" } },
             { headers: { 'Content-Type': 'application/json;charset=UTF-8', 'x-token': 'null' }, timeout: 10000 }
         );
 
@@ -32,6 +32,7 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
                 { headers: { 'x-token': token }, timeout: 5000 }
             );
             const onuList = res.data.data || [];
+            
             const found = onuList.find(x => x.macaddr && x.macaddr.toLowerCase().startsWith(searchMac.toLowerCase()));
 
             if (found) {
@@ -55,9 +56,9 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
 async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Cibarola API)...`);
     try {
-        const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase();
+        const cleanTargetMac = mac.replace(/[:.\-]/g, '').toLowerCase();
         const matchTarget = cleanTargetMac.substring(0, 11);
-        console.log(`MAC dicari: ${matchTarget}...`);
+        console.log(`   MAC dicari: ${matchTarget}...`);
 
         const passwordBase64 = Buffer.from(oltConfig.pass || 'admin').toString('base64');
         const loginRes = await axios.post(
@@ -110,13 +111,14 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. Hioso (Puppeteer) - FIXED
+// 3. Hioso (Puppeteer) - FULL REWRITE FIX
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     let searchMac = mac.substring(0, 16);
     if (oltConfig.label.includes('Cibarola') || oltConfig.label.includes('8Pon')) {
         searchMac = mac.substring(0, 15);
     }
+
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Puppeteer)...`);
     console.log(`   MAC dicari: ${searchMac} (Panjang: ${searchMac.length})`);
 
@@ -127,6 +129,7 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
+        // Waktu tunggu diperpanjang menjadi 35 detik agar kuat hadapi OLT lemot
         page.setDefaultTimeout(35000);
         page.setDefaultNavigationTimeout(35000);
 
@@ -134,11 +137,13 @@ async function cekRedamanHioso(oltConfig, mac) {
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
-        // ❌ JANGAN GUNAKAN page.authenticate()
-        // OLT Hioso (Cibarola & Sukamelang) menggunakan Web Form Login, BUKAN HTTP Basic Auth.
-        // Memaksakan authenticate() justru menyebabkan error ERR_INVALID_AUTH_CREDENTIALS.
+        // ==== TAMBAHKAN BARIS INI ====
+        // Untuk mengatasi ERR_INVALID_AUTH_CREDENTIALS (Pop-up Basic Auth)
+        await page.authenticate({ username: user, password: pass });
+        // =============================
 
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
+        // Ganti networkidle dengan domcontentloaded (lebih cepat dan stabil)
         await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
         // FASE LOGIN
@@ -153,7 +158,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             ]);
         }
 
-        // Cek Double Login
+        // Cek Double Login dengan Cerdas (Tunggu 8 detik, jika form masih ada, login lagi)
         try {
             await page.waitForSelector('#a', { visible: true, timeout: 8000 });
             console.log(`   ⚠️ Terdeteksi Double Login, mengeksekusi login kedua...`);
@@ -170,13 +175,15 @@ async function cekRedamanHioso(oltConfig, mac) {
                 page.click('input[type="button"]')
             ]);
         } catch (e) {
-            console.log(`   ✅ Login sukses, masuk ke hal aman data.`);
+            // Jika dalam 3 detik form #a tidak muncul, berarti login pertama sudah lolos/sukses
+            console.log(`   ✅ Login sukses, masuk ke halaman data.`);
         }
 
-        // FASE EKSTRAKSI DATA
+        // FASE EKSTRAKSI DATA BERDASARKAN MODE
         if (oltConfig.iframe) {
-            console.log(`   Mode: Double Login + Iframe (Sama seperti Sukamelang 8PON)`);
+            console.log(`   Mode: Double Login + Iframe`);
             
+            // 1. Polling mencari leftFrame dinamis
             let leftFrame = null;
             for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
@@ -184,14 +191,16 @@ async function cekRedamanHioso(oltConfig, mac) {
                 if (leftFrame) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
-            if (!leftFrame) throw new Error('Gagal memuat menu (leftFrame tidak ditemukan)');
+            if (!leftFrame) throw new Error('Gagal memuat menu (leftFrame tidak ditemukan walau sudah ditunggu)');
 
+            // 2. Klik All ONU
             await leftFrame.evaluate(() => {
                 const links = Array.from(document.querySelectorAll('a'));
                 const allOnuLink = links.find(link => link.innerText.trim() === 'All ONU' || link.innerText.trim().toLowerCase().includes('all onu'));
                 if (allOnuLink) allOnuLink.click();
             }).catch(() => console.log('   ⚠️ Gagal klik All ONU, tapi dilanjutkan...'));
             
+            // 3. Polling mencari mainFrame dinamis
             let mainFrame = null;
             for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
@@ -199,11 +208,13 @@ async function cekRedamanHioso(oltConfig, mac) {
                 if (mainFrame) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
-            if (!mainFrame) throw new Error('Gagal memuat tabel (mainFrame tidak ditemukan)');
+            if (!mainFrame) throw new Error('Gagal memuat tabel (mainFrame tidak ditemukan walau sudah ditunggu)');
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
+            // Tunggu tabel benar-benar ter-render di dalam frame
             await mainFrame.waitForSelector('table tr', { timeout: 30000 });
 
+            // 4. Ubah limit tabel menjadi 300 baris
             await mainFrame.evaluate(() => {
                 if (typeof setNumPerPage === 'function') setNumPerPage(300);
                 else if (typeof OnPageSizeChange === 'function') OnPageSizeChange(300);
@@ -216,6 +227,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                 }
             }).catch(() => {});
             
+            // Kasih napas 3 detik agar tabel selesai di-refresh
             await new Promise(r => setTimeout(r, 3000));
 
             const rxPowerResult = await mainFrame.evaluate((macToFind) => {
@@ -238,6 +250,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                 console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
                 return { olt_name: oltConfig.label, mac_onu: searchMac, redaman: `${rxPowerResult} dBm`, status: 'Online' };
             }
+
         } else {
             console.log(`   Mode: Single Login + Direct URL`);
             
@@ -290,13 +303,14 @@ async function cekRedamanHioso(oltConfig, mac) {
 }
 
 // ==========================================
-// 4. SCAN SEMUA OLT
+// 4. SCAN SEMUA OLT - HYBRID
 // ==========================================
 async function scanSemuaOlt(oltList, mac) {
     console.log(`\n========================================`);
     console.log(`🚀 MULAI SCAN ${oltList.length} OLT...`);
     console.log(`========================================`);
     const hasilAkhir = [];
+
     const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
     const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
 
