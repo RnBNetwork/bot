@@ -158,9 +158,9 @@ async function cekRedamanHioso(oltConfig, mac) {
             ]);
         }
 
-        // Cek Double Login dengan Cerdas (Tunggu 3 detik, jika form masih ada, login lagi)
+        // Cek Double Login dengan Cerdas (Tunggu 8 detik, jika form masih ada, login lagi)
         try {
-            await page.waitForSelector('#a', { visible: true, timeout: 3000 });
+            await page.waitForSelector('#a', { visible: true, timeout: 8000 });
             console.log(`   ⚠️ Terdeteksi Double Login, mengeksekusi login kedua...`);
             
             await page.evaluate(() => {
