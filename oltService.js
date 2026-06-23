@@ -137,6 +137,11 @@ async function cekRedamanHioso(oltConfig, mac) {
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
+        // ==== TAMBAHKAN BARIS INI ====
+        // Untuk mengatasi ERR_INVALID_AUTH_CREDENTIALS (Pop-up Basic Auth)
+        await page.authenticate({ username: user, password: pass });
+        // =============================
+
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
         // Ganti networkidle dengan domcontentloaded (lebih cepat dan stabil)
         await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
