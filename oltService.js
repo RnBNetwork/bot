@@ -110,10 +110,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. Hioso (Puppeteer) - FIXED
-// ==========================================
-// ==========================================
-// 3. Hioso (Puppeteer) - FIXED untuk HTTP Basic Auth
+// 3. Hioso (Puppeteer) - FIXED untuk SEMUA MODE
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     let searchMac = mac.substring(0, 16);
@@ -139,15 +136,16 @@ async function cekRedamanHioso(oltConfig, mac) {
 
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
         
-        // ✅ UNTUK HIOSO 8PON SUKAMELANG: Gunakan HTTP Basic Auth
+        // ✅ SEMUA HIOSO MENGGUNAKAN HTTP Basic Auth
         await page.authenticate({ username: user, password: pass });
-        
         await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
         console.log(`   ✅ HTTP Basic Auth sukses`);
-
-        // ❌ JANGAN coba login form lagi! Langsung kerja dengan frames
+        
         await new Promise(r => setTimeout(r, 3000));
 
+        // ==========================================
+        // MODE 1: IFRAME = true (Cibarola & 8Pon) - SUDAH SUKSES
+        // ==========================================
         if (oltConfig.iframe) {
             console.log(`   Mode: HTTP Basic Auth + Iframe`);
             
@@ -180,9 +178,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                         link.innerText.trim() === 'All ONU' || 
                         link.innerText.trim().toLowerCase().includes('all onu')
                     );
-                    if (allOnuLink) {
-                        allOnuLink.click();
-                    }
+                    if (allOnuLink) allOnuLink.click();
                 });
                 console.log(`   ✅ Klik All ONU sukses`);
             } catch (err) {
@@ -265,21 +261,34 @@ async function cekRedamanHioso(oltConfig, mac) {
                 };
             }
 
+        // ==========================================
+        // MODE 2: IFRAME = false (Perum & 4Pon) - SINGLE LOGIN
+        // ==========================================
         } else {
-            console.log(`   Mode: HTTP Basic Auth + Direct URL`);
+            console.log(`   Mode: HTTP Basic Auth + Direct URL (Single Login)`);
             
-            // Untuk OLT tanpa iframe
+            // Langsung akses halaman ONU
             await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            await new Promise(r => setTimeout(r, 3000));
             
+            // Cek apakah ada frame
             let targetFrame = page;
             const frames = page.frames();
             if (frames.length > 1) {
                 targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
+                console.log(`   ✅ Frame ditemukan: ${frames.length} frames`);
+            } else {
+                console.log(`   ℹ️ Tidak ada frame, gunakan main page`);
             }
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
-            await targetFrame.waitForSelector('table tr', { timeout: 20000 });
+            try {
+                await targetFrame.waitForSelector('table tr', { timeout: 20000 });
+            } catch (err) {
+                console.log(`   ⚠️ Tabel tidak ditemukan: ${err.message}`);
+            }
 
+            // Cari MAC dan redaman
             const rxPowerResult = await targetFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
                 const rows = Array.from(document.querySelectorAll('table tr'));
