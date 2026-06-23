@@ -1,10 +1,9 @@
-// index.js - RnBNET BOT (Public Access - No Whitelist)
+// index.js - RnBNET BOT (Public Access - Anti-Hang MikroTik)
 const path = require('path');
 const express = require('express');
 const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const RouterOSAPI = require('node-routeros').RouterOSAPI;
-
 const config = require('./config');
 const { scanSemuaOlt } = require('./oltService');
 
@@ -50,12 +49,22 @@ client.on('disconnected', (reason) => {
 });
 
 // ==========================================
-// 4. HELPER MIKROTIK
+// 4. HELPER MIKROTIK (ANTI-HANG / TIMEOUT WRAPPER)
 // ==========================================
+function withTimeout(promise, ms, errMsg) {
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(errMsg)), ms);
+    });
+    return Promise.race([
+        promise.finally(() => clearTimeout(timeoutId)),
+        timeoutPromise
+    ]);
+}
+
 async function connectMikrotik(serverKey) {
     const targetServer = config.servers[serverKey];
     if (!targetServer) throw new Error(`Server "${serverKey}" tidak ditemukan`);
-    
     const api = new RouterOSAPI({
         host: targetServer.mikrotik.host,
         port: targetServer.mikrotik.port,
@@ -63,25 +72,30 @@ async function connectMikrotik(serverKey) {
         password: targetServer.mikrotik.pass,
         timeout: 15
     });
-    
+
     try {
-        await api.connect();
+        await withTimeout(api.connect(), 15000, `Timeout koneksi ke MikroTik ${targetServer.label}.`);
         return { api, targetServer };
     } catch (err) {
-        throw new Error(`Gagal konek MikroTik ${targetServer.label}. Cek port API.`);
+        throw new Error(`Gagal konek MikroTik ${targetServer.label}. Cek port API atau network.`);
     }
 }
 
 async function getUserFromMikrotik(api, username) {
-    const secrets = await api.write('/ppp/secret/print');
+    const secrets = await withTimeout(api.write('/ppp/secret/print'), 25000, 'Timeout: MikroTik terlalu lambat merespons (Query Secret).');
     const userObj = secrets.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
     if (!userObj) throw new Error(`User "${username}" tidak ditemukan`);
     return userObj;
 }
 
 async function getActiveUserFromMikrotik(api, username) {
-    const activeUsers = await api.write('/ppp/active/print');
+    const activeUsers = await withTimeout(api.write('/ppp/active/print'), 25000, 'Timeout: MikroTik terlalu lambat merespons (Query Active).');
     return activeUsers.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
+}
+
+async function safeCloseMikrotik(api) {
+    if (!api) return;
+    try { await withTimeout(api.close(), 5000, 'Close timeout'); } catch (e) {}
 }
 
 // ==========================================
@@ -93,7 +107,6 @@ client.on('message_create', async (msg) => {
         const args = text.split(/\s+/);
         const command = args[0]?.toLowerCase();
 
-        // Perintah Publik
         if (command === 'ping') { await msg.reply('pong 🏓'); return; }
         
         if (command === '!menu') {
@@ -107,10 +120,9 @@ client.on('message_create', async (msg) => {
             return;
         }
 
-        // Perintah !cek dan !aktifkan (BISA DIAKSES SIAPA SAJA)
         if (['!cek', '!aktifkan'].includes(command)) {
-            
             if (args.length < 3) {
+                // ✅ FIX: Backtick sudah ditutup dengan benar di akhir baris
                 await msg.reply(`❌ *Format Salah*\n\nGunakan: \`${command} [mikrotik] [username]\`\nContoh: \`${command} cibarola liacahyani\``);
                 return;
             }
@@ -124,7 +136,6 @@ client.on('message_create', async (msg) => {
                 return;
             }
 
-            // Log untuk monitoring (opsional)
             console.log(`\n📨 [REQUEST] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username}`);
 
             if (command === '!cek') await handleCekRedaman(msg, serverKey, username);
@@ -145,7 +156,7 @@ async function handleCekRedaman(msg, serverKey, username) {
     try {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
-
+        
         await msg.reply(`🔍 Mencari *${username}* di MikroTik *${targetServer.label}*...`);
         const userObj = await getUserFromMikrotik(api, username);
         
@@ -174,7 +185,7 @@ async function handleCekRedaman(msg, serverKey, username) {
     } catch (err) {
         await msg.reply(`❌ *Gagal Cek Redaman*\n\n${err.message}`);
     } finally {
-        try { if (api) await api.close(); } catch (e) {}
+        await safeCloseMikrotik(api);
     }
 }
 
@@ -186,11 +197,17 @@ async function handleAktivasi(msg, serverKey, username) {
     try {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
-
+        
         await msg.reply(`⏳ *Memproses Open Isolir*\n\n👤 User: ${username}\n💻 Server: ${targetServer.label}\n\n_Mohon tunggu..._`);
         
         const userObj = await getUserFromMikrotik(api, username);
-        await api.write(['/ppp/secret/set', `=.id=${userObj['.id']}`, '=disabled=no']);
+        
+        await withTimeout(
+            api.write(['/ppp/secret/set', `=.id=${userObj['.id']}`, '=disabled=no']),
+            15000,
+            'Timeout: Gagal mengirim perintah isolir ke MikroTik.'
+        );
+        
         await new Promise(r => setTimeout(r, 2000));
 
         const activeUser = await getActiveUserFromMikrotik(api, username);
@@ -232,7 +249,7 @@ async function handleAktivasi(msg, serverKey, username) {
     } catch (err) {
         await msg.reply(`❌ *Gagal Aktivasi*\n\n${err.message}`);
     } finally {
-        try { if (api) await api.close(); } catch (e) {}
+        await safeCloseMikrotik(api);
     }
 }
 
@@ -244,5 +261,4 @@ process.on('uncaughtException', err => {
     if (err.name === 'RosException' && err.message.includes('Timed out')) return;
     console.error('❌ UNCAUGHT:', err);
 });
-
 client.initialize().catch(console.error);
