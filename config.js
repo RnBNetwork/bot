@@ -1,4 +1,4 @@
-// config.js - RnBNET BOT (Final Valid Version)
+// config.js - RnBNET BOT (Final Fixed Version)
 module.exports = {
     defaultMikrotik: { timeout: 15 },
     servers: {
