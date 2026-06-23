@@ -1,4 +1,4 @@
-// oltService.js - STABLE & UPDATED VERSION
+// oltService.js - 100% CLEAN & FIXED VERSION
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -9,9 +9,8 @@ const puppeteer = require('puppeteer');
 async function cekRedamanHSAirpoAPI(oltConfig, mac) {
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (API)...`);
     try {
-        // Hapus 1 karakter (panjang 16)
         const searchMac = mac.substring(0, 16);
-        console.log(`   MAC dicari: ${searchMac}`);
+        console.log(`MAC dicari: ${searchMac}`);
 
         const username = oltConfig.user || 'root';
         const password = oltConfig.pass || 'admin';
@@ -20,7 +19,7 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
 
         const loginRes = await axios.post(
             `http://${oltConfig.ip}:${oltConfig.port}/userlogin?form=login`,
-            { method: "set", param: { name: username, key, value, captcha_v: "", captcha_f: "" } },
+            { method: "set", param: { name: username, key, value, captcha_v: " ", captcha_f: " " } },
             { headers: { 'Content-Type': 'application/json;charset=UTF-8', 'x-token': 'null' }, timeout: 10000 }
         );
 
@@ -33,10 +32,7 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
                 { headers: { 'x-token': token }, timeout: 5000 }
             );
             const onuList = res.data.data || [];
-            
-            const found = onuList.find(x => 
-                x.macaddr && x.macaddr.toLowerCase().startsWith(searchMac.toLowerCase())
-            );
+            const found = onuList.find(x => x.macaddr && x.macaddr.toLowerCase().startsWith(searchMac.toLowerCase()));
 
             if (found) {
                 console.log(`   ✅ Ditemukan di PON ${port}: ${found.macaddr}`);
@@ -59,10 +55,9 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
 async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Cibarola API)...`);
     try {
-        // MAC FULL (tidak dipotong)
-        const cleanTargetMac = mac.replace(/[:.\-]/g, '').toLowerCase();
+        const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase();
         const matchTarget = cleanTargetMac.substring(0, 11);
-        console.log(`   MAC dicari: ${matchTarget}...`);
+        console.log(`MAC dicari: ${matchTarget}...`);
 
         const passwordBase64 = Buffer.from(oltConfig.pass || 'admin').toString('base64');
         const loginRes = await axios.post(
@@ -76,7 +71,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
         const cookies = loginRes.headers['set-cookie'];
         let sessionCookie = '';
         if (cookies) {
-            cookies.forEach(c => { if (c.includes('_:USERNAME:_=')) sessionCookie = c.split(';')[0]; });
+            sessionCookie = cookies.map(c => c.split(';')[0]).join('; ');
         }
 
         const totalPon = oltConfig.total_pon || 4;
@@ -84,7 +79,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
             const ponPort = `pon${i}`;
             const opticalRes = await axios.get(
                 `http://${oltConfig.ip}:${oltConfig.port}/goform/getPortOnuOptical?${Math.random()}&PonPortName=${ponPort}`,
-                { headers: { 'Cookie': sessionCookie, 'X-Requested-With': 'XMLHttpRequest' }, timeout: 8000 }
+                { headers: { 'Cookie': sessionCookie, 'X-Requested-With': 'XMLHttpRequest' }, timeout: 15000 }
             );
 
             let jsonData = opticalRes.data;
@@ -115,17 +110,13 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. Hioso (Puppeteer) - UPDATED MAC CUT LOGIC
+// 3. Hioso (Puppeteer) - FIXED
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
-    // DEFAULT: Hapus 1 karakter (panjang 16) untuk Perum & 4Pon
     let searchMac = mac.substring(0, 16);
-
-    // KHUSUS: Hioso Cibarola & Hioso 8Pon Sukamelang -> Hapus 2 karakter (panjang 15)
     if (oltConfig.label.includes('Cibarola') || oltConfig.label.includes('8Pon')) {
         searchMac = mac.substring(0, 15);
     }
-
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Puppeteer)...`);
     console.log(`   MAC dicari: ${searchMac} (Panjang: ${searchMac.length})`);
 
@@ -136,80 +127,77 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
-        page.setDefaultTimeout(20000);
-        page.setDefaultNavigationTimeout(20000);
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(30000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
+        // ❌ JANGAN GUNAKAN page.authenticate()! OLT Hioso pakai Web Form Login.
+
+        console.log(`   ⏳ Mengakses halaman utama OLT...`);
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+
+        // FASE LOGIN
         if (oltConfig.iframe) {
-            // MODE A: CIBAROLA & 8PON SUKAMELANG (Double Login + Iframe)
             console.log(`   Mode: Double Login + Iframe`);
             
-            await page.authenticate({ username: user, password: pass });
-            await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 20000 });
-
-            // Login Form 1
+            // Tunggu form login muncul
+            await page.waitForSelector('#a', { timeout: 15000 }).catch(() => {});
+            
             if (await page.$('#a')) {
+                console.log(`   🔑 Mengisi form login pertama...`);
+                await page.type('#a', user);
+                await page.type('#b', pass);
+                await page.click('input[type="button"]'); // ✅ FIX: Hapus spasi di selector
+                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+            }
+
+            // Cek Double Login
+            await page.waitForSelector('#a', { timeout: 8000 }).catch(() => {});
+            if (await page.$('#a')) {
+                console.log(`   ⚠️ Terdeteksi Double Login, mengeksekusi login kedua...`);
+                await page.evaluate(() => {
+                    document.querySelector('#a').value = '';
+                    document.querySelector('#b').value = '';
+                });
                 await page.type('#a', user);
                 await page.type('#b', pass);
                 await page.click('input[type="button"]');
-                await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => {});
+                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+            } else {
+                console.log(`   ✅ Login pertama sukses.`);
             }
-            await new Promise(r => setTimeout(r, 2000));
 
-            // Login Form 2
-            if (await page.$('#a')) {
-                await page.type('#a', user);
-                await page.type('#b', pass);
-                await page.click('input[type="button"]');
-                await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => {});
-            }
-            await new Promise(r => setTimeout(r, 3000));
-
-            // RETRY LOOP: Cari leftFrame
+            // Cari leftFrame
             let leftFrame = null;
-            for (let attempt = 1; attempt <= 5; attempt++) {
+            for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
-                leftFrame = frames.find(f => f.name() === 'leftFrame');
-                
-                if (!leftFrame) {
-                    leftFrame = frames.find(f => 
-                        (f.name() && f.name().toLowerCase().includes('left')) ||
-                        (f.url() && (f.url().includes('menu') || f.url().includes('left')))
-                    );
-                }
-                
-                if (leftFrame) {
-                    console.log(`   ✅ leftFrame ditemukan di attempt ${attempt}`);
-                    break;
-                }
-                await new Promise(r => setTimeout(r, 2000));
+                leftFrame = frames.find(f => f.name() === 'leftFrame' || (f.url() && (f.url().includes('menu') || f.url().includes('left'))));
+                if (leftFrame) break;
+                await new Promise(r => setTimeout(r, 1000));
             }
-
-            if (!leftFrame) {
-                const allFrames = page.frames();
-                const frameInfo = allFrames.map(f => `name="${f.name()}" url="${f.url()}"`).join('\n      ');
-                throw new Error(`leftFrame tidak ditemukan setelah 10 detik.\n   Frame yang ada:\n      ${frameInfo}`);
-            }
+            if (!leftFrame) throw new Error('Gagal memuat menu (leftFrame tidak ditemukan). Login mungkin gagal.');
 
             await leftFrame.evaluate(() => {
                 const links = Array.from(document.querySelectorAll('a'));
-                const allOnuLink = links.find(link => link.innerText.trim() === 'All ONU');
+                const allOnuLink = links.find(link => link.innerText.trim() === 'All ONU' || link.innerText.trim().toLowerCase().includes('all onu'));
                 if (allOnuLink) allOnuLink.click();
-            }).catch(err => console.log(`   ⚠️ Klik All ONU error: ${err.message}`));
-            
-            await new Promise(r => setTimeout(r, 4000));
+            }).catch(() => console.log('   ⚠️ Gagal klik All ONU...'));
 
-            let mainFrame = page.frames().find(f => f.name() === 'mainFrame');
-            if (!mainFrame) {
-                mainFrame = page.frames().find(f => 
-                    (f.name() && f.name().toLowerCase().includes('main')) ||
-                    (f.url() && f.url().includes('onu'))
-                );
+            // Cari mainFrame
+            let mainFrame = null;
+            for (let attempt = 1; attempt <= 15; attempt++) {
+                const frames = page.frames();
+                mainFrame = frames.find(f => f.name() === 'mainFrame' || (f.url() && f.url().includes('onu')));
+                if (mainFrame) break;
+                await new Promise(r => setTimeout(r, 1000));
             }
-            if (!mainFrame) throw new Error('mainFrame tidak ditemukan');
+            if (!mainFrame) throw new Error('Gagal memuat tabel (mainFrame tidak ditemukan)');
+
+            console.log(`   ⏳ Menunggu data tabel dimuat...`);
+            await mainFrame.waitForSelector('table tr', { timeout: 20000 });
 
             await mainFrame.evaluate(() => {
                 if (typeof setNumPerPage === 'function') setNumPerPage(300);
@@ -222,12 +210,12 @@ async function cekRedamanHioso(oltConfig, mac) {
                     }
                 }
             }).catch(() => {});
-            await new Promise(r => setTimeout(r, 5000));
+            
+            await new Promise(r => setTimeout(r, 3000));
 
             const rxPowerResult = await mainFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:.-]/g, '').toLowerCase();
                 const rows = Array.from(document.querySelectorAll('table tr'));
-                
                 for (let row of rows) {
                     const cleanRowText = row.innerText.replace(/[:.-]/g, '').toLowerCase();
                     if (cleanRowText.includes(cleanTarget)) {
@@ -246,32 +234,35 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
 
         } else {
-            // MODE B: PERUM & 4PON SUKAMELANG (Single Login + Direct URL)
             console.log(`   Mode: Single Login + Direct URL`);
             
-            await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 15000 });
-
+            await page.waitForSelector('#a', { timeout: 15000 }).catch(() => {});
             if (await page.$('#a')) {
+                console.log(`   🔑 Mengisi form login...`);
                 await page.type('#a', user);
                 await page.type('#b', pass);
                 await page.click('input[type="button"]');
-                await page.waitForNavigation({ waitUntil: 'networkidle0' }).catch(() => {});
+                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
             }
 
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2', timeout: 15000 });
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded' });
             
             let targetFrame = page;
-            const frames = page.frames();
-            if (frames.length > 1) {
-                targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
+            for (let i = 0; i < 5; i++) {
+                const frames = page.frames();
+                if (frames.length > 1) {
+                    targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
+                }
+                if (targetFrame) break;
+                await new Promise(r => setTimeout(r, 1000));
             }
 
-            await targetFrame.waitForSelector('table', { timeout: 10000 });
+            console.log(`   ⏳ Menunggu data tabel dimuat...`);
+            await targetFrame.waitForSelector('table tr', { timeout: 20000 });
 
             const rxPowerResult = await targetFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
                 const rows = Array.from(document.querySelectorAll('table tr'));
-                
                 for (let row of rows) {
                     const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
                     if (rowText.includes(cleanTarget)) {
@@ -290,7 +281,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
         }
 
-        console.log(`   ❌ Tidak ditemukan`);
+        console.log(`   ❌ Tidak ditemukan di tabel`);
         return null;
 
     } catch (error) {
@@ -302,14 +293,13 @@ async function cekRedamanHioso(oltConfig, mac) {
 }
 
 // ==========================================
-// 4. SCAN SEMUA OLT - HYBRID
+// 4. SCAN SEMUA OLT
 // ==========================================
 async function scanSemuaOlt(oltList, mac) {
     console.log(`\n========================================`);
     console.log(`🚀 MULAI SCAN ${oltList.length} OLT...`);
     console.log(`========================================`);
     const hasilAkhir = [];
-
     const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
     const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
 
@@ -330,7 +320,7 @@ async function scanSemuaOlt(oltList, mac) {
             if (hasil && !hasil.error) {
                 hasilAkhir.push(`\n✅ *${hasil.olt_name}*\n   📉 Redaman: *${hasil.redaman}*\n   📡 Status: ${hasil.status}`);
             } else if (hasil && hasil.error) {
-                hasilAkhir.push(`\n️ *${olt.label}*: ${hasil.error}`);
+                hasilAkhir.push(`\n⚠️ *${olt.label}*: ${hasil.error}`);
             }
         });
     }
@@ -340,7 +330,7 @@ async function scanSemuaOlt(oltList, mac) {
         for (const olt of puppeteerOlts) {
             const hasil = await cekRedamanHioso(olt, mac);
             if (hasil && !hasil.error) {
-                hasilAkhir.push(`\n✅ *${hasil.olt_name}*\n   📉 Redaman: *${hasil.redaman}*\n    Status: ${hasil.status}`);
+                hasilAkhir.push(`\n✅ *${hasil.olt_name}*\n   📉 Redaman: *${hasil.redaman}*\n   📡 Status: ${hasil.status}`);
             } else if (hasil && hasil.error) {
                 hasilAkhir.push(`\n⚠️ *${olt.label}*: ${hasil.error}`);
             }
@@ -352,7 +342,7 @@ async function scanSemuaOlt(oltList, mac) {
     console.log(`========================================\n`);
 
     if (hasilAkhir.length === 0) {
-        return '️ ONU tidak ditemukan di OLT manapun pada cabang ini.';
+        return '⚠️ ONU tidak ditemukan di OLT manapun pada cabang ini.';
     }
     return hasilAkhir.join('\n');
 }
