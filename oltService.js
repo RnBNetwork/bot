@@ -1,11 +1,9 @@
-// oltService.js - FINAL STABLE VERSION (Fixed Timeout & Cookie Issues)
+// oltService.js - FINAL CLEAN VERSION
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
 
-// ==========================================
 // 1. HSAirpo API (Panglejar & Sukamelang)
-// ==========================================
 async function cekRedamanHSAirpoAPI(oltConfig, mac) {
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (API)...`);
     try {
@@ -49,9 +47,7 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
     }
 }
 
-// ==========================================
-// 2. HSAirpo CIBAROLA (Axios API) - FIXED
-// ==========================================
+// 2. HSAirpo CIBAROLA (Axios API)
 async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Cibarola API)...`);
     try {
@@ -74,7 +70,6 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
         }
         console.log(`   ✅ Login sukses`);
 
-        // ✅ FIX: Ambil SEMUA cookie, bukan hanya _:USERNAME:_=
         const cookies = loginRes.headers['set-cookie'];
         let sessionCookie = '';
         if (cookies) {
@@ -87,10 +82,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
             const ponPort = `pon${i}`;
             console.log(`   ⏳ Mengambil data optical untuk ${ponPort.toUpperCase()}...`);
             
-            // ✅ FIX: Pastikan URL bersih tanpa spasi
             const url = `http://${oltConfig.ip}:${oltConfig.port}/goform/getPortOnuOptical?${Math.random()}&PonPortName=${ponPort}`;
-            
-            // ✅ FIX: Timeout dinaikkan ke 15 detik
             const opticalRes = await axios.get(
                 url,
                 { headers: { 'Cookie': sessionCookie, 'X-Requested-With': 'XMLHttpRequest' }, timeout: 15000 }
@@ -123,9 +115,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
     }
 }
 
-// ==========================================
-// 3. Hioso (Puppeteer) - FIXED (Anti-Stuck)
-// ==========================================
+// 3. Hioso (Puppeteer) - FIXED (TANPA page.authenticate)
 async function cekRedamanHioso(oltConfig, mac) {
     let searchMac = mac.substring(0, 16);
     if (oltConfig.label.includes('Cibarola') || oltConfig.label.includes('8Pon')) {
@@ -148,19 +138,20 @@ async function cekRedamanHioso(oltConfig, mac) {
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
+        // ❌ JANGAN PERNAH MENAMBAHKAN page.authenticate() DI SINI!
+        // OLT Hioso menggunakan Web Form Login, BUKAN HTTP Basic Auth.
+
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
         
-        // ✅ FIX: Timeout wrapper ketat untuk page.goto (25 detik)
         const GOTO_TIMEOUT = 25000;
         const gotoPromise = page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT });
         const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error(`Timeout mengakses OLT setelah ${GOTO_TIMEOUT/1000} detik. Cek network/IP OLT.`)), GOTO_TIMEOUT + 1000)
+            setTimeout(() => reject(new Error(`Timeout mengakses OLT setelah ${GOTO_TIMEOUT/1000} detik.`)), GOTO_TIMEOUT + 1000)
         );
         
         await Promise.race([gotoPromise, timeoutPromise]);
         console.log(`   ✅ Halaman utama berhasil dimuat`);
 
-        // FASE LOGIN
         if (await page.$('#a')) {
             console.log(`   🔑 Mengisi form login...`);
             await page.type('#a', user);
@@ -172,7 +163,6 @@ async function cekRedamanHioso(oltConfig, mac) {
             ]);
         }
 
-        // Cek Double Login
         try {
             await page.waitForSelector('#a', { visible: true, timeout: 8000 });
             console.log(`   ⚠️ Terdeteksi Double Login, mengeksekusi login kedua...`);
@@ -192,7 +182,6 @@ async function cekRedamanHioso(oltConfig, mac) {
             console.log(`   ✅ Login sukses, masuk ke hal aman data.`);
         }
 
-        // FASE EKSTRAKSI DATA
         if (oltConfig.iframe) {
             console.log(`   Mode: Double Login + Iframe`);
             
@@ -308,9 +297,7 @@ async function cekRedamanHioso(oltConfig, mac) {
     }
 }
 
-// ==========================================
 // 4. SCAN SEMUA OLT
-// ==========================================
 async function scanSemuaOlt(oltList, mac) {
     console.log(`\n========================================`);
     console.log(`🚀 MULAI SCAN ${oltList.length} OLT...`);
