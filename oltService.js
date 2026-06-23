@@ -265,30 +265,27 @@ async function cekRedamanHioso(oltConfig, mac) {
         // MODE 2: IFRAME = false (Perum & 4Pon) - SINGLE LOGIN
         // ==========================================
         } else {
-            console.log(`   Mode: HTTP Basic Auth + Direct URL (Single Login)`);
+            console.log(`   Mode: Single Login + Direct URL`);
             
-            // Langsung akses halaman ONU
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-            await new Promise(r => setTimeout(r, 3000));
+            await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 15000 });
+
+            if (await page.$('#a')) {
+                await page.type('#a', user);
+                await page.type('#b', pass);
+                await page.click('input[type="button"]');
+                await page.waitForNavigation({ waitUntil: 'networkidle0' }).catch(() => {});
+            }
+
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2', timeout: 15000 });
             
-            // Cek apakah ada frame
             let targetFrame = page;
             const frames = page.frames();
             if (frames.length > 1) {
                 targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
-                console.log(`   ✅ Frame ditemukan: ${frames.length} frames`);
-            } else {
-                console.log(`   ℹ️ Tidak ada frame, gunakan main page`);
             }
 
-            console.log(`   ⏳ Menunggu data tabel dimuat...`);
-            try {
-                await targetFrame.waitForSelector('table tr', { timeout: 20000 });
-            } catch (err) {
-                console.log(`   ⚠️ Tabel tidak ditemukan: ${err.message}`);
-            }
+            await targetFrame.waitForSelector('table', { timeout: 10000 });
 
-            // Cari MAC dan redaman
             const rxPowerResult = await targetFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
                 const rows = Array.from(document.querySelectorAll('table tr'));
@@ -307,16 +304,11 @@ async function cekRedamanHioso(oltConfig, mac) {
 
             if (rxPowerResult) {
                 console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
-                return { 
-                    olt_name: oltConfig.label, 
-                    mac_onu: searchMac, 
-                    redaman: `${rxPowerResult} dBm`, 
-                    status: 'Online' 
-                };
+                return { olt_name: oltConfig.label, mac_onu: searchMac, redaman: `${rxPowerResult} dBm`, status: 'Online' };
             }
         }
 
-        console.log(`   ❌ Tidak ditemukan di tabel`);
+        console.log(`   ❌ Tidak ditemukan`);
         return null;
 
     } catch (error) {
