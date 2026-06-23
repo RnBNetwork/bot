@@ -1,4 +1,4 @@
-// oltService.js - STABLE & FIXED VERSION (NO page.authenticate)
+// oltService.js - FINAL STABLE VERSION (Fixed Timeout & Cookie Issues)
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -50,7 +50,7 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
 }
 
 // ==========================================
-// 2. HSAirpo CIBAROLA (Axios API)
+// 2. HSAirpo CIBAROLA (Axios API) - FIXED
 // ==========================================
 async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Cibarola API)...`);
@@ -60,26 +60,40 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
         console.log(`MAC dicari: ${matchTarget}...`);
 
         const passwordBase64 = Buffer.from(oltConfig.pass || 'admin').toString('base64');
+        console.log(`   ⏳ Login ke OLT...`);
+        
         const loginRes = await axios.post(
             `http://${oltConfig.ip}:${oltConfig.port}/login/Auth`,
             { userName: oltConfig.user || 'admin', password: passwordBase64 },
             { headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, timeout: 10000 }
         );
 
-        if (loginRes.data.errCode !== 'success') throw new Error('Login gagal');
+        if (loginRes.data.errCode !== 'success') {
+            console.log(`   ❌ Login gagal: ${JSON.stringify(loginRes.data)}`);
+            throw new Error('Login gagal');
+        }
+        console.log(`   ✅ Login sukses`);
 
+        // ✅ FIX: Ambil SEMUA cookie, bukan hanya _:USERNAME:_=
         const cookies = loginRes.headers['set-cookie'];
         let sessionCookie = '';
         if (cookies) {
-            cookies.forEach(c => { if (c.includes('_:USERNAME:_=')) sessionCookie = c.split(';')[0]; });
+            sessionCookie = cookies.map(c => c.split(';')[0]).join('; ');
         }
+        console.log(`   🍪 Cookie: ${sessionCookie ? 'Berhasil diambil' : 'KOSONG!'}`);
 
         const totalPon = oltConfig.total_pon || 4;
         for (let i = 1; i <= totalPon; i++) {
             const ponPort = `pon${i}`;
+            console.log(`   ⏳ Mengambil data optical untuk ${ponPort.toUpperCase()}...`);
+            
+            // ✅ FIX: Pastikan URL bersih tanpa spasi
+            const url = `http://${oltConfig.ip}:${oltConfig.port}/goform/getPortOnuOptical?${Math.random()}&PonPortName=${ponPort}`;
+            
+            // ✅ FIX: Timeout dinaikkan ke 15 detik
             const opticalRes = await axios.get(
-                `http://${oltConfig.ip}:${oltConfig.port}/goform/getPortOnuOptical?${Math.random()}&PonPortName=${ponPort}`,
-                { headers: { 'Cookie': sessionCookie, 'X-Requested-With': 'XMLHttpRequest' }, timeout: 8000 }
+                url,
+                { headers: { 'Cookie': sessionCookie, 'X-Requested-With': 'XMLHttpRequest' }, timeout: 15000 }
             );
 
             let jsonData = opticalRes.data;
@@ -110,7 +124,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. Hioso (Puppeteer) - FIXED (NO page.authenticate)
+// 3. Hioso (Puppeteer) - FIXED (Anti-Stuck)
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     let searchMac = mac.substring(0, 16);
@@ -127,19 +141,24 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
-        page.setDefaultTimeout(35000);
-        page.setDefaultNavigationTimeout(35000);
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(30000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
-        // ❌ JANGAN GUNAKAN page.authenticate()
-        // OLT Hioso menggunakan Web Form Login, BUKAN HTTP Basic Auth.
-        // Memaksakan authenticate() menyebabkan error ERR_INVALID_AUTH_CREDENTIALS.
-
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
-        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+        
+        // ✅ FIX: Timeout wrapper ketat untuk page.goto (25 detik)
+        const GOTO_TIMEOUT = 25000;
+        const gotoPromise = page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT });
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error(`Timeout mengakses OLT setelah ${GOTO_TIMEOUT/1000} detik. Cek network/IP OLT.`)), GOTO_TIMEOUT + 1000)
+        );
+        
+        await Promise.race([gotoPromise, timeoutPromise]);
+        console.log(`   ✅ Halaman utama berhasil dimuat`);
 
         // FASE LOGIN
         if (await page.$('#a')) {
@@ -148,7 +167,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             await page.type('#b', pass);
             
             await Promise.all([
-                page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
+                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
                 page.click('input[type="button"]')
             ]);
         }
@@ -166,7 +185,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             await page.type('#b', pass);
             
             await Promise.all([
-                page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
+                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
                 page.click('input[type="button"]')
             ]);
         } catch (e) {
@@ -178,7 +197,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             console.log(`   Mode: Double Login + Iframe`);
             
             let leftFrame = null;
-            for (let attempt = 1; attempt <= 15; attempt++) {
+            for (let attempt = 1; attempt <= 10; attempt++) {
                 const frames = page.frames();
                 leftFrame = frames.find(f => f.name() === 'leftFrame' || (f.url() && (f.url().includes('menu') || f.url().includes('left'))));
                 if (leftFrame) break;
@@ -193,7 +212,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             }).catch(() => console.log('   ⚠️ Gagal klik All ONU, tapi dilanjutkan...'));
             
             let mainFrame = null;
-            for (let attempt = 1; attempt <= 15; attempt++) {
+            for (let attempt = 1; attempt <= 10; attempt++) {
                 const frames = page.frames();
                 mainFrame = frames.find(f => f.name() === 'mainFrame' || (f.url() && f.url().includes('onu')));
                 if (mainFrame) break;
@@ -202,7 +221,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             if (!mainFrame) throw new Error('Gagal memuat tabel (mainFrame tidak ditemukan)');
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
-            await mainFrame.waitForSelector('table tr', { timeout: 30000 });
+            await mainFrame.waitForSelector('table tr', { timeout: 20000 });
 
             await mainFrame.evaluate(() => {
                 if (typeof setNumPerPage === 'function') setNumPerPage(300);
@@ -216,7 +235,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                 }
             }).catch(() => {});
             
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, 2000));
 
             const rxPowerResult = await mainFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:.-]/g, '').toLowerCase();
@@ -241,7 +260,7 @@ async function cekRedamanHioso(oltConfig, mac) {
         } else {
             console.log(`   Mode: Single Login + Direct URL`);
             
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded' });
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 20000 });
             
             let targetFrame = page;
             for (let i = 0; i < 5; i++) {
@@ -254,7 +273,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
-            await targetFrame.waitForSelector('table tr', { timeout: 30000 });
+            await targetFrame.waitForSelector('table tr', { timeout: 20000 });
 
             const rxPowerResult = await targetFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
