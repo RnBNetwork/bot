@@ -1,4 +1,4 @@
-// config.js - RnBNET BOT (Final Fixed Version)
+// config.js - RnBNET BOT (Urutan OLT Sukamelang Diperbarui)
 module.exports = {
     defaultMikrotik: { timeout: 15 },
     servers: {
@@ -27,11 +27,12 @@ module.exports = {
                 { type: 'HSAirpo', label: 'HSAirpo Cibarola', ip: '103.191.165.115', port: 704, user: 'admin', pass: 'admin', method: 'cibarola', total_pon: 4 }
             ]
         },
-        // 4. SUKAMELANG (URUTAN: HSAirpo → 4Pon → 8Pon)
+        // 4. SUKAMELANG
         sukamelang: {
             label: 'Sukamelang',
             mikrotik: { host: '103.191.165.126', port: 8728, user: 'berry', pass: 'Subang21' },
             olts: [
+                // Urutan diprioritaskan: HSAirpo -> Hioso 4Pon -> Hioso 8Pon
                 { type: 'HSAirpo', label: 'HSAirpo Sukamelang', ip: '103.191.165.126', port: 9900, user: 'root', pass: 'admin' },
                 { type: 'Hioso', label: 'Hioso 4Pon Sukamelang', ip: '103.191.165.126', port: 670, user: 'admin', pass: 'admin', iframe: false },
                 { type: 'Hioso', label: 'Hioso 8Pon Sukamelang', ip: '103.191.165.126', port: 680, user: 'admin', pass: 'admin', iframe: true }
