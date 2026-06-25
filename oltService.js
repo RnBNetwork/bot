@@ -1,201 +1,421 @@
-// oltService.js - RnBNET BOT (OLT Scanner Service with Real-Time Streaming)
+// oltService.js - 100% CLEAN & FIXED VERSION WITH REAL-TIME STREAMING
 const axios = require('axios');
+const crypto = require('crypto');
 const puppeteer = require('puppeteer');
 
-/**
- * 1. CEK REDAMAN HS AIRPO CIBAROLA (CONTOH METHOD API)
- */
-async function cekRedamanHSAirpoCibarola(olt, mac) {
+// ==========================================
+// 1. HSAirpo API (Panglejar & Sukamelang)
+// ==========================================
+async function cekRedamanHSAirpoAPI(oltConfig, mac) {
+    console.log(`\n🔍 [${oltConfig.label}] Mulai cek (API)...`);
     try {
-        // Sesuaikan dengan URL API, endpoint, payload, atau token OLT HSAirpo Cibarola Anda
-        const response = await axios.post(`${olt.host}/api/onu/status`, { mac: mac }, {
-            headers: { 'Authorization': `Bearer ${olt.token}` },
-            timeout: 10000
-        });
+        const searchMac = mac.substring(0, 16);
+        console.log(`MAC dicari: ${searchMac}`);
 
-        if (response.data && response.data.found) {
-            return {
-                olt_name: olt.label,
-                redaman: response.data.rx_power || '-25.00 dBm',
-                status: response.data.status || 'Online',
-                error: false
-            };
+        const username = oltConfig.user || 'root';
+        const password = oltConfig.pass || 'admin';
+        const key = crypto.createHash('md5').update(`${username}:${password}`).digest('hex');
+        const value = Buffer.from(password).toString('base64');
+
+        const loginRes = await axios.post(
+            `http://${oltConfig.ip}:${oltConfig.port}/userlogin?form=login`,
+            { method: "set", param: { name: username, key, value, captcha_v: " ", captcha_f: " " } },
+            { headers: { 'Content-Type': 'application/json;charset=UTF-8', 'x-token': 'null' }, timeout: 10000 }
+        );
+
+        if (loginRes.data.code !== 1) throw new Error(`Login gagal: ${loginRes.data.message}`);
+        const token = loginRes.headers['x-token'];
+
+        for (let port = 1; port <= 16; port++) {
+            const res = await axios.get(
+                `http://${oltConfig.ip}:${oltConfig.port}/onu_allow_list?port_id=${port}`,
+                { headers: { 'x-token': token }, timeout: 5000 }
+            );
+            const onuList = res.data.data || [];
+            const found = onuList.find(x => x.macaddr && x.macaddr.toLowerCase().startsWith(searchMac.toLowerCase()));
+
+            if (found) {
+                console.log(`   ✅ Ditemukan di PON ${port}: ${found.macaddr}`);
+                let redaman = found.receive_power || 'N/A';
+                if (redaman !== 'N/A' && !String(redaman).includes('dBm')) redaman = `${redaman} dBm`;
+                return { olt_name: `${oltConfig.label} (PON ${port})`, mac_onu: found.macaddr, redaman, status: found.status || 'Online' };
+            }
         }
-        return null; // Mengembalikan null jika ONU tidak ditemukan di OLT ini
-    } catch (err) {
-        console.error(`❌ Error API HSAirpo Cibarola (${olt.label}):`, err.message);
-        return { olt_name: olt.label, error: true, message: err.message };
+        console.log(`   ❌ Tidak ditemukan di semua port`);
+        return null;
+    } catch (error) {
+        console.error(`   ❌ Error: ${error.message}`);
+        return { error: error.message };
     }
 }
 
-/**
- * 2. CEK REDAMAN HS AIRPO API GENERAL
- */
-async function cekRedamanHSAirpoAPI(olt, mac) {
+// ==========================================
+// 2. HSAirpo CIBAROLA (Axios API)
+// ==========================================
+async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
+    console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Cibarola API)...`);
     try {
-        // Sesuaikan URL, parameter, atau basic auth sesuai dengan OLT HSAirpo cabang lain
-        const response = await axios.get(`${olt.host}/api/v1/onu`, {
-            params: { mac: mac },
-            auth: { username: olt.user, password: olt.pass },
-            timeout: 10000
-        });
+        const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase();
+        const matchTarget = cleanTargetMac.substring(0, 11);
+        console.log(`MAC dicari: ${matchTarget}...`);
 
-        if (response.data && response.data.success && response.data.data) {
-            return {
-                olt_name: olt.label,
-                redaman: response.data.data.onu_rx_power + ' dBm',
-                status: response.data.data.phase_state === 'working' ? 'Online' : 'Offline',
-                error: false
-            };
+        const passwordBase64 = Buffer.from(oltConfig.pass || 'admin').toString('base64');
+        const loginRes = await axios.post(
+            `http://${oltConfig.ip}:${oltConfig.port}/login/Auth`,
+            { userName: oltConfig.user || 'admin', password: passwordBase64 },
+            { headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, timeout: 10000 }
+        );
+
+        if (loginRes.data.errCode !== 'success') throw new Error('Login gagal');
+
+        const cookies = loginRes.headers['set-cookie'];
+        let sessionCookie = '';
+        if (cookies) {
+            sessionCookie = cookies.map(c => c.split(';')[0]).join('; ');
         }
-        return null; // Mengembalikan null jika ONU tidak ditemukan di OLT ini
-    } catch (err) {
-        console.error(`❌ Error API HSAirpo (${olt.label}):`, err.message);
-        return { olt_name: olt.label, error: true, message: err.message };
+
+        const totalPon = oltConfig.total_pon || 4;
+        for (let i = 1; i <= totalPon; i++) {
+            const ponPort = `pon${i}`;
+            const opticalRes = await axios.get(
+                `http://${oltConfig.ip}:${oltConfig.port}/goform/getPortOnuOptical?${Math.random()}&PonPortName=${ponPort}`,
+                { headers: { 'Cookie': sessionCookie, 'X-Requested-With': 'XMLHttpRequest' }, timeout: 15000 }
+            );
+
+            let jsonData = opticalRes.data;
+            if (typeof jsonData === 'string') {
+                try { jsonData = JSON.parse(jsonData); } catch (e) {}
+            }
+
+            if (jsonData && jsonData.list) {
+                const found = jsonData.list.find(onu => {
+                    const onuMac = (onu.mac || '').replace(/\./g, '').toLowerCase();
+                    return onuMac.startsWith(matchTarget);
+                });
+
+                if (found) {
+                    console.log(`   ✅ Ditemukan di ${ponPort.toUpperCase()}: ${found.mac}`);
+                    let redaman = found.rxpower || 'N/A';
+                    if (redaman !== 'N/A' && !String(redaman).includes('dBm')) redaman = `${redaman} dBm`;
+                    return { olt_name: `${oltConfig.label} (${ponPort.toUpperCase()})`, mac_onu: found.mac, redaman, status: 'Online' };
+                }
+            }
+        }
+        console.log(`   ❌ Tidak ditemukan di semua PON`);
+        return null;
+    } catch (error) {
+        console.error(`   ❌ Error: ${error.message}`);
+        return { error: error.message };
     }
 }
 
-/**
- * 3. CEK REDAMAN HIOSO (PUPPETEER BROWSER AUTOMATION)
- */
-async function cekRedamanHioso(olt, mac) {
-    let browser;
+// ==========================================
+// 3. Hioso (Puppeteer) - FIXED untuk SEMUA MODE
+// ==========================================
+async function cekRedamanHioso(oltConfig, mac) {
+    let searchMac = mac.substring(0, 16);
+    if (oltConfig.label.includes('Cibarola') || oltConfig.label.includes('8Pon')) {
+        searchMac = mac.substring(0, 15);
+    }
+    console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Puppeteer)...`);
+    console.log(`   MAC dicari: ${searchMac} (Panjang: ${searchMac.length})`);
+
+    const browser = await puppeteer.launch({
+        headless: 'new',
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    });
+
     try {
-        // Jalankan headless browser dengan argument optimal agar hemat CPU & RAM (Anti-Hang)
-        browser = await puppeteer.launch({
-            headless: 'new',
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
-        
         const page = await browser.newPage();
-        await page.setDefaultNavigationTimeout(30000);
-        
-        // 🛑 SILAHKAN SESUAIKAN ALUR SCRAPING DI BAWAH INI DENGAN WEB GUI HIOSO ANDA 🛑
-        
-        // 1. Menuju Halaman Login
-        await page.goto(olt.host, { waitUntil: 'networkidle2' });
-        await page.type('#username', olt.user || 'admin');
-        await page.type('#password', olt.pass || 'admin');
-        await page.click('#login_btn');
-        await page.waitForNavigation({ waitUntil: 'networkidle2' });
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(30000);
 
-        // 2. Menuju Halaman Pencarian ONU
-        await page.goto(`${olt.host}/onu_search.html`, { waitUntil: 'networkidle2' });
-        await page.type('#search_mac', mac);
-        await page.click('#search_btn');
-        
-        // Beri jeda 2 detik agar tabel memuat data dari perangkat
-        await new Promise(r => setTimeout(r, 2000)); 
+        const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
+        const user = oltConfig.user || 'admin';
+        const pass = oltConfig.pass || 'admin';
 
-        // 3. Ekstrak Data dari DOM Tabel HTML OLT
-        const dataOnu = await page.evaluate(() => {
-            const row = document.querySelector('#onu_table tr.datarow'); // Sesuaikan selector ID tabel Anda
-            if (!row) return null;
+        console.log(`   ⏳ Mengakses halaman utama OLT...`);
+        
+        // ✅ SEMUA HIOSO MENGGUNAKAN HTTP Basic Auth
+        await page.authenticate({ username: user, password: pass });
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        console.log(`   ✅ HTTP Basic Auth sukses`);
+        
+        await new Promise(r => setTimeout(r, 3000));
+
+        // ==========================================
+        // MODE 1: IFRAME = true (Cibarola & 8Pon) - SUDAH SUKSES
+        // ==========================================
+        if (oltConfig.iframe) {
+            console.log(`   Mode: HTTP Basic Auth + Iframe`);
             
-            const cols = row.querySelectorAll('td');
-            return {
-                redaman: cols[4]?.innerText?.trim() || 'Tidak terbaca', // Sesuaikan urutan kolom td
-                status: cols[5]?.innerText?.trim() || 'Unknown'
-            };
-        });
+            // Cari leftFrame untuk menu
+            let leftFrame = null;
+            for (let attempt = 1; attempt <= 15; attempt++) {
+                const frames = page.frames();
+                leftFrame = frames.find(f => 
+                    f.name() === 'leftFrame' || 
+                    f.name() === 'menuFrame' ||
+                    (f.url() && (f.url().includes('menu') || f.url().includes('left')))
+                );
+                if (leftFrame) break;
+                await new Promise(r => setTimeout(r, 1000));
+            }
+            
+            if (!leftFrame) {
+                const allFrames = page.frames();
+                console.log(`   📋 Frames yang terdeteksi: ${allFrames.map(f => `"${f.name()}"`).join(', ')}`);
+                throw new Error('Gagal memuat menu frame');
+            }
+            console.log(`   ✅ leftFrame ditemukan: "${leftFrame.name()}"`);
 
-        if (dataOnu) {
-            return {
-                olt_name: olt.label,
-                redaman: dataOnu.redaman,
-                status: dataOnu.status,
-                error: false
-            };
+            // Klik "All ONU" di menu
+            try {
+                await leftFrame.waitForSelector('a', { timeout: 10000 });
+                await leftFrame.evaluate(() => {
+                    const links = Array.from(document.querySelectorAll('a'));
+                    const allOnuLink = links.find(link => 
+                        link.innerText.trim() === 'All ONU' || 
+                        link.innerText.trim().toLowerCase().includes('all onu')
+                    );
+                    if (allOnuLink) allOnuLink.click();
+                });
+                console.log(`   ✅ Klik All ONU sukses`);
+            } catch (err) {
+                console.log(`   ⚠️ Gagal klik All ONU: ${err.message}`);
+            }
+            
+            await new Promise(r => setTimeout(r, 3000));
+
+            // Cari mainFrame untuk tabel
+            let mainFrame = null;
+            for (let attempt = 1; attempt <= 15; attempt++) {
+                const frames = page.frames();
+                mainFrame = frames.find(f => 
+                    f.name() === 'mainFrame' || 
+                    f.name() === 'main' ||
+                    f.name() === 'content' ||
+                    (f.url() && f.url().includes('onu'))
+                );
+                if (mainFrame) break;
+                await new Promise(r => setTimeout(r, 1000));
+            }
+            
+            if (!mainFrame) {
+                const allFrames = page.frames();
+                console.log(`   📋 Frames yang terdeteksi: ${allFrames.map(f => `"${f.name()}"`).join(', ')}`);
+                throw new Error('Gagal memuat main frame');
+            }
+            console.log(`   ✅ mainFrame ditemukan: "${mainFrame.name()}"`);
+
+            // Tunggu tabel dimuat
+            console.log(`   ⏳ Menunggu data tabel dimuat...`);
+            try {
+                await mainFrame.waitForSelector('table tr', { timeout: 20000 });
+            } catch (err) {
+                console.log(`   ⚠️ Tabel tidak ditemukan, coba cari elemen lain...`);
+            }
+
+            // Coba ubah limit tabel
+            try {
+                await mainFrame.evaluate(() => {
+                    if (typeof setNumPerPage === 'function') setNumPerPage(300);
+                    else if (typeof OnPageSizeChange === 'function') OnPageSizeChange(300);
+                    else {
+                        const sel = document.querySelector('select');
+                        if (sel) {
+                            sel.value = sel.options[sel.options.length - 1].value;
+                            sel.dispatchEvent(new Event('change'));
+                        }
+                    }
+                });
+                await new Promise(r => setTimeout(r, 2000));
+            } catch (err) {
+                // Abaikan error
+            }
+
+            // Cari MAC dan redaman
+            const rxPowerResult = await mainFrame.evaluate((macToFind) => {
+                const cleanTarget = macToFind.replace(/[:.-]/g, '').toLowerCase();
+                const rows = Array.from(document.querySelectorAll('table tr'));
+                
+                for (let row of rows) {
+                    const cleanRowText = row.innerText.replace(/[:.-]/g, '').toLowerCase();
+                    if (cleanRowText.includes(cleanTarget)) {
+                        const rowTextClean = row.innerText.replace(/\s+/g, ' ').trim();
+                        const rxPattern = /-\d+\.\d+/;
+                        const match = rowTextClean.match(rxPattern);
+                        return match ? match[0] : null;
+                    }
+                }
+                return null;
+            }, searchMac);
+
+            if (rxPowerResult) {
+                console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
+                return { 
+                    olt_name: oltConfig.label, 
+                    mac_onu: searchMac, 
+                    redaman: `${rxPowerResult} dBm`, 
+                    status: 'Online' 
+                };
+            }
+
+        // ==========================================
+        // MODE 2: IFRAME = false (Perum & 4Pon) - SINGLE LOGIN
+        // ==========================================
+        } else {
+            console.log(`   Mode: HTTP Basic Auth + Direct URL (Single Login)`);
+            
+            // 1. Akses halaman utama dulu untuk membangun sesi/cookie
+            await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await new Promise(r => setTimeout(r, 3000));
+
+            // 2. Cek apakah masih ada form login web (beberapa OLT punya double auth)
+            if (await page.$('#a')) {
+                console.log(`   🔑 Mengisi form login web...`);
+                await page.type('#a', user);
+                await page.type('#b', pass);
+                await page.click('input[type="button"]');
+                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+                await new Promise(r => setTimeout(r, 3000));
+            }
+
+            // 3. Akses halaman ONU
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await new Promise(r => setTimeout(r, 3000));
+            
+            // Cek apakah ada frame
+            let targetFrame = page;
+            const frames = page.frames();
+            if (frames.length > 1) {
+                targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
+                console.log(`   ✅ Frame ditemukan: ${frames.length} frames`);
+            } else {
+                console.log(`   ℹ️ Tidak ada frame, gunakan main page`);
+            }
+
+            console.log(`   ⏳ Menunggu data tabel dimuat...`);
+            try {
+                await targetFrame.waitForSelector('table tr', { timeout: 20000 });
+            } catch (err) {
+                console.log(`   ⚠️ Tabel tidak ditemukan: ${err.message}`);
+            }
+
+            // Cari MAC dan redaman
+            const rxPowerResult = await targetFrame.evaluate((macToFind) => {
+                const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
+                const rows = Array.from(document.querySelectorAll('table tr'));
+                
+                for (let row of rows) {
+                    const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
+                    if (rowText.includes(cleanTarget)) {
+                        const cleanRowText = row.innerText.replace(/\s+/g, ' ').trim();
+                        const rxPattern = /\s(-\d+\.\d+)\s/;
+                        const match = cleanRowText.match(rxPattern);
+                        if (match) return match[1];
+                    }
+                }
+                return null;
+            }, searchMac);
+
+            if (rxPowerResult) {
+                console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
+                return { 
+                    olt_name: oltConfig.label, 
+                    mac_onu: searchMac, 
+                    redaman: `${rxPowerResult} dBm`, 
+                    status: 'Online' 
+                };
+            }
         }
-        return null; // Mengembalikan null jika ONU tidak ditemukan di OLT ini
-    } catch (err) {
-        console.error(`❌ Error Puppeteer Hioso (${olt.label}):`, err.message);
-        return { olt_name: olt.label, error: true, message: err.message };
+
+        console.log(`   ❌ Tidak ditemukan di tabel`);
+        return null;
+
+    } catch (error) {
+        console.error(`   ❌ Error: ${error.message}`);
+        return { error: error.message };
     } finally {
-        // Pastikan browser selalu ditutup agar tidak meninggalkan proses 'ghost/zombie' di RAM server
-        if (browser) await browser.close();
+        await browser.close();
     }
 }
 
-/**
- * 4. FUNGSI UTAMA: SCAN SEMUA OLT (DENGAN REAL-TIME STREAMING KE WHATSAPP)
- * Dipanggil langsung dari index.js di dalam sistem antrean
- */
-async function scanSemuaOlt(oltList, mac, msg) {
+// ==========================================
+// 4. SCAN SEMUA OLT (DENGAN CO-OPERATION REAL-TIME STREAMING)
+// ==========================================
+async function scanSemuaOlt(oltList, mac, msg = null) {
     console.log(`\n========================================`);
     console.log(`🚀 MULAI SCAN ${oltList.length} OLT...`);
     console.log(`========================================`);
-    
-    let foundCount = 0;
+    const hasilAkhir = [];
     const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
     const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
 
-    // --- BAGIAN A. JALANKAN SCAN HS AIRPO (PARALEL LEWAT API AXIOS) ---
     if (axiosOlts.length > 0) {
         console.log(`\n⚡ Menjalankan ${axiosOlts.length} HSAirpo secara paralel...`);
         const axiosPromises = axiosOlts.map(async (olt) => {
-            try {
-                let hasil = null;
-                if (olt.method === 'cibarola') {
-                    hasil = await cekRedamanHSAirpoCibarola(olt, mac);
-                } else {
-                    hasil = await cekRedamanHSAirpoAPI(olt, mac);
-                }
-
-                // JIKA COCOK, DETIK ITU JUGA LANGSUNG DIKIRIM KE CHAT WA (TANPA MENUNGGU SCAN SELESAI)
-                if (hasil && !hasil.error) {
-                    foundCount++;
-                    await msg.reply(
-                        `📌 *OLT DITEMUKAN (Real-time)*\n\n` +
-                        `🖥️ *OLT:* ${hasil.olt_name}\n` +
-                        `📉 *Redaman:* *${hasil.redaman}*\n` +
-                        `📡 *Status:* ${hasil.status}`
-                    );
-                }
-            } catch (err) {
-                console.error(`Error pada scan paralel ${olt.label}:`, err.message);
+            let hasil = null;
+            if (olt.method === 'cibarola') {
+                hasil = await cekRedamanHSAirpoCibarola(olt, mac);
+            } else {
+                hasil = await cekRedamanHSAirpoAPI(olt, mac);
             }
+
+            // 🔥 REAL-TIME STREAMING: Jika data ketemu, kirim via WA detik itu juga!
+            if (msg && hasil && !hasil.error) {
+                await msg.reply(
+                    `📌 *OLT DITEMUKAN (Real-time)*\n\n` +
+                    `🖥️ *OLT:* ${hasil.olt_name}\n` +
+                    `📉 *Redaman:* *${hasil.redaman}*\n` +
+                    `📡 *Status:* ${hasil.status}`
+                ).catch(() => {});
+            }
+
+            return { olt, hasil };
         });
 
-        // Tunggu hingga seluruh request API Axios selesai
-        await Promise.all(axiosPromises);
+        const axiosResults = await Promise.all(axiosPromises);
+        axiosResults.forEach(({ olt, hasil }) => {
+            if (hasil && !hasil.error) {
+                hasilAkhir.push(`\n✅ *${hasil.olt_name}*\n   📉 Redaman: *${hasil.redaman}*\n   📡 Status: ${hasil.status}`);
+            } else if (hasil && hasil.error) {
+                hasilAkhir.push(`\n⚠️ *${olt.label}*: ${hasil.error}`);
+            }
+        });
     }
 
-    // --- BAGIAN B. JALANKAN SCAN HIOSO (BERURUTAN LEWAT PUPPETEER) ---
     if (puppeteerOlts.length > 0) {
         console.log(`\n🐢 Menjalankan ${puppeteerOlts.length} Hioso secara berurutan...`);
         for (const olt of puppeteerOlts) {
-            try {
-                const hasil = await cekRedamanHioso(olt, mac);
-                
-                // JIKA COCOK, DETIK ITU JUGA LANGSUNG DIKIRIM KE CHAT WA (TANPA MENUNGGU OLT BERIKUTNYA)
-                if (hasil && !hasil.error) {
-                    foundCount++;
-                    await msg.reply(
-                        `📌 *OLT DITEMUKAN (Real-time)*\n\n` +
-                        `🖥️ *OLT:* ${hasil.olt_name}\n` +
-                        `📉 *Redaman:* *${hasil.redaman}*\n` +
-                        `📡 *Status:* ${hasil.status}`
-                    );
-                }
-            } catch (err) {
-                console.error(`Error pada scan Puppeteer ${olt.label}:`, err.message);
+            const hasil = await cekRedamanHioso(olt, mac);
+
+            // 🔥 REAL-TIME STREAMING: Jika data ketemu, kirim via WA detik itu juga!
+            if (msg && hasil && !hasil.error) {
+                await msg.reply(
+                    `📌 *OLT DITEMUKAN (Real-time)*\n\n` +
+                    `🖥️ *OLT:* ${hasil.olt_name}\n` +
+                    `📉 *Redaman:* *${hasil.redaman}*\n` +
+                    `📡 *Status:* ${hasil.status}`
+                ).catch(() => {});
+            }
+
+            if (hasil && !hasil.error) {
+                hasilAkhir.push(`\n✅ *${hasil.olt_name}*\n   📉 Redaman: *${hasil.redaman}*\n   📡 Status: ${hasil.status}`);
+            } else if (hasil && hasil.error) {
+                hasilAkhir.push(`\n⚠️ *${olt.label}*: ${hasil.error}`);
             }
         }
     }
 
     console.log(`\n========================================`);
-    console.log(`✅ SCAN SEMUA OLT SELESAI!`);
+    console.log(`✅ SCAN SELESAI!`);
     console.log(`========================================\n`);
 
-    // Mengembalikan status ringkasan akhir untuk teks penutup di index.js
-    if (foundCount === 0) {
+    if (hasilAkhir.length === 0) {
         return '⚠️ ONU tidak ditemukan di OLT manapun pada cabang ini.';
     }
-    return `🏁 Pemeriksaan selesai. Ditemukan total *${foundCount}* data ONU cocok di lapangan.`;
+    return hasilAkhir.join('\n');
 }
 
-// Export fungsi agar dapat di-require di index.js
-module.exports = {
-    scanSemuaOlt
-};
+module.exports = { scanSemuaOlt };
