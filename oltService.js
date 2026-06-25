@@ -101,7 +101,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. Hioso (Puppeteer) - FIXED untuk SEMUA MODE
+// 3. Hioso (Puppeteer) - FIXED RETRY LOCATION
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     let searchMac = mac.substring(0, 16);
@@ -127,23 +127,18 @@ async function cekRedamanHioso(oltConfig, mac) {
 
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
         
-        // ✅ SEMUA HIOSO MENGGUNAKAN HTTP Basic Auth
         await page.authenticate({ username: user, password: pass });
-        
-        // ✅ PERUBAHAN 1: Gunakan networkidle2 untuk stabilitas lebih baik
         await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 20000 });
         console.log(`   ✅ HTTP Basic Auth sukses`);
         
-        // ✅ PERUBAHAN 2: Naikkan delay awal dari 3 detik → 5 detik
         await new Promise(r => setTimeout(r, 5000));
 
         // ==========================================
-        // MODE 1: IFRAME = true (Cibarola & 8Pon)
+        // MODE 1: IFRAME = true (Cibarola & 8Pon) - AUTO-RETRY DI SINI
         // ==========================================
         if (oltConfig.iframe) {
             console.log(`   Mode: HTTP Basic Auth + Iframe`);
             
-            // ✅ PERUBAHAN 3: Naikkan retry interval & total retry
             let leftFrame = null;
             for (let attempt = 1; attempt <= 20; attempt++) {
                 const frames = page.frames();
@@ -153,8 +148,6 @@ async function cekRedamanHioso(oltConfig, mac) {
                     (f.url() && (f.url().includes('menu') || f.url().includes('left')))
                 );
                 if (leftFrame) break;
-                
-                // ✅ PERUBAHAN 4: Naikkan interval dari 1 detik → 2 detik
                 await new Promise(r => setTimeout(r, 2000));
             }
             
@@ -165,7 +158,6 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
             console.log(`   ✅ leftFrame ditemukan: "${leftFrame.name()}"`);
 
-            // Klik "All ONU" di menu
             try {
                 await leftFrame.waitForSelector('a', { timeout: 10000 });
                 await leftFrame.evaluate(() => {
@@ -183,7 +175,6 @@ async function cekRedamanHioso(oltConfig, mac) {
             
             await new Promise(r => setTimeout(r, 4000));
 
-            // Cari mainFrame untuk tabel
             let mainFrame = null;
             for (let attempt = 1; attempt <= 20; attempt++) {
                 const frames = page.frames();
@@ -204,34 +195,25 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
             console.log(`   ✅ mainFrame ditemukan: "${mainFrame.name()}"`);
 
-            // Tunggu tabel dimuat
-            console.log(`   ⏳ Menunggu data tabel dimuat...`);
+            console.log(`    Menunggu data tabel dimuat...`);
             try {
                 await mainFrame.waitForSelector('table tr', { timeout: 20000 });
             } catch (err) {
-                console.log(`   ⚠️ Tabel tidak ditemukan, coba cari elemen lain...`);
+                console.log(`   ⚠️ Tabel tidak ditemukan...`);
             }
 
-            // Coba ubah limit tabel
             try {
                 await mainFrame.evaluate(() => {
                     if (typeof setNumPerPage === 'function') setNumPerPage(300);
                     else if (typeof OnPageSizeChange === 'function') OnPageSizeChange(300);
-                    else {
-                        const sel = document.querySelector('select');
-                        if (sel) {
-                            sel.value = sel.options[sel.options.length - 1].value;
-                            sel.dispatchEvent(new Event('change'));
-                        }
-                    }
                 });
                 await new Promise(r => setTimeout(r, 3000));
             } catch (err) {
-                // Abaikan error
+                // Abaikan
             }
 
-            // ✅ AUTO-RETRY PENCARIAN MAC (sudah ada di kode Anda)
-            console.log(`   🔍 Mulai pencarian MAC (dengan Auto-Retry)...`);
+            // ✅ AUTO-RETRY PENCARIAN MAC (DIPINDAHKAN KE SINI)
+            console.log(`   🔍 Mulai pencarian MAC (dengan Auto-Retry 3x)...`);
             let rxPowerResult = null;
             
             for (let retry = 1; retry <= 3; retry++) {
@@ -270,7 +252,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
 
         // ==========================================
-        // MODE 2: IFRAME = false (Perum & 4Pon)
+        // MODE 2: IFRAME = false (Perum & 4Pon) - TANPA AUTO-RETRY
         // ==========================================
         } else {
             console.log(`   Mode: HTTP Basic Auth + Direct URL (Single Login)`);
@@ -306,35 +288,25 @@ async function cekRedamanHioso(oltConfig, mac) {
                 console.log(`   ⚠️ Tabel tidak ditemukan: ${err.message}`);
             }
 
-            // AUTO-RETRY PENCARIAN MAC
-            let rxPowerResult = null;
-            for (let retry = 1; retry <= 3; retry++) {
-                rxPowerResult = await targetFrame.evaluate((macToFind) => {
-                    const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
-                    const rows = Array.from(document.querySelectorAll('table tr'));
-                    
-                    for (let row of rows) {
-                        const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
-                        if (rowText.includes(cleanTarget)) {
-                            const cleanRowText = row.innerText.replace(/\s+/g, ' ').trim();
-                            const rxPattern = /\s(-\d+\.\d+)\s/;
-                            const match = cleanRowText.match(rxPattern);
-                            if (match) return match[1];
-                        }
+            //  PENCARIAN MAC BIASA (TANPA AUTO-RETRY)
+            const rxPowerResult = await targetFrame.evaluate((macToFind) => {
+                const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
+                const rows = Array.from(document.querySelectorAll('table tr'));
+                
+                for (let row of rows) {
+                    const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
+                    if (rowText.includes(cleanTarget)) {
+                        const cleanRowText = row.innerText.replace(/\s+/g, ' ').trim();
+                        const rxPattern = /\s(-\d+\.\d+)\s/;
+                        const match = cleanRowText.match(rxPattern);
+                        if (match) return match[1];
                     }
-                    return null;
-                }, searchMac);
-
-                if (rxPowerResult) {
-                    console.log(`   ✅ Ditemukan pada percobaan ke-${retry}! Redaman: ${rxPowerResult} dBm`);
-                    break;
-                } else {
-                    console.log(`   ⏳ Data tabel belum lengkap, menunggu 3 detik dan coba lagi (${retry}/3)...`);
-                    await new Promise(r => setTimeout(r, 3000));
                 }
-            }
+                return null;
+            }, searchMac);
 
             if (rxPowerResult) {
+                console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
                 return { 
                     olt_name: oltConfig.label, 
                     mac_onu: searchMac, 
@@ -344,7 +316,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
         }
 
-        console.log(`   ❌ Tidak ditemukan di tabel setelah 3x percobaan`);
+        console.log(`   ❌ Tidak ditemukan di tabel`);
         return null;
 
     } catch (error) {
