@@ -1,262 +1,78 @@
-// index.js - RnBNET BOT (Public Access - Anti-Hang & High Performance)
-const path = require('path');
-const express = require('express');
-const qrcode = require('qrcode');
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const RouterOSAPI = require('node-routeros').RouterOSAPI;
+// ==================================================
+// TAMBAHKAN DI ATAS GLOBAL SCOPE (DI LUAR EVENT LISTENER)
+// ==================================================
+const commandQueue = [];
+let isBotBusy = false; // Flag penanda jika bot sedang memproses perintah
 
-const config = require('./config');
-const { scanSemuaOlt } = require('./oltService');
+// Fungsi utama penjadwal antrean
+async function jalankanAntrean() {
+    // Jika bot sedang sibuk atau antrean kosong, batalkan eksekusi
+    if (isBotBusy || commandQueue.length === 0) return;
 
-// ==========================================
-// 1. WEB SERVER
-// ==========================================
-const app = express();
-app.use(express.static(path.join(__dirname)));
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🌐 WEB SERVER RUNNING ON PORT ${PORT}`));
-
-// ==========================================
-// 2. WHATSAPP CLIENT
-// ==========================================
-const client = new Client({
-    authStrategy: new LocalAuth({ clientId: 'rnbnet', dataPath: './session' }),
-    puppeteer: {
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--window-size=1280,720'],
-        timeout: 180000
-    }
-});
-
-// ==========================================
-// 3. EVENT LISTENER
-// ==========================================
-console.log('🤖 BOT STARTING...');
-client.on('qr', async (qr) => {
-    await qrcode.toFile(path.join(__dirname, 'qr.png'), qr);
-    console.log('📱 SCAN QR CODE -> qr.png');
-});
-client.on('authenticated', () => console.log('✅ AUTH SUCCESS'));
-client.on('ready', () => {
-    console.log('================================');
-    console.log('🚀 BOT READY FOR RnBNET!');
-    console.log('🔓 PUBLIC ACCESS: Siap melayani siapa saja');
-    console.log('================================');
-});
-client.on('disconnected', (reason) => {
-    console.warn('⚠️ BOT DISCONNECTED:', reason);
-    setTimeout(() => client.initialize().catch(console.error), 5000);
-});
-
-// ==========================================
-// 4. HELPER MIKROTIK (HIGHLY OPTIMIZED)
-// ==========================================
-async function connectMikrotik(serverKey) {
-    const targetServer = config.servers[serverKey];
-    if (!targetServer) throw new Error(`Server "${serverKey}" tidak ditemukan`);
+    // Kunci bot agar permintaan lain mengantre
+    isBotBusy = true;
     
-    const api = new RouterOSAPI({
-        host: targetServer.mikrotik.host,
-        port: targetServer.mikrotik.port,
-        user: targetServer.mikrotik.user,
-        password: targetServer.mikrotik.pass,
-        timeout: 10 // Timeout dipersingkat agar tidak hang lama saat gangguan
-    });
-    
-    // CRITICAL FIX: Tangkap error event pada socket agar bot TIDAK CRASH/HANG saat koneksi drop
-    api.on('error', (err) => {
-        console.error(`⚠️ [MikroTik Socket Error - ${targetServer.label}]:`, err.message);
-    });
-    
+    // Ambil permintaan pertama dari antrean
+    const { msg, executeFn } = commandQueue.shift();
+
     try {
-        await api.connect();
-        return { api, targetServer };
-    } catch (err) {
-        throw new Error(`Gagal konek MikroTik ${targetServer.label}. API port tertutup atau jaringan putus.`);
-    }
-}
-
-async function getUserFromMikrotik(api, username) {
-    // ANTI-HANG FIX: Query langsung nama user di MikroTik (sangat ringan & instant)
-    const secrets = await api.write('/ppp/secret/print', [`?name=${username.trim()}`]);
-    if (!secrets || secrets.length === 0) throw new Error(`User "${username}" tidak ditemukan`);
-    return secrets[0];
-}
-
-async function getActiveUserFromMikrotik(api, username) {
-    // ANTI-HANG FIX: Query langsung nama active user di MikroTik
-    const activeUsers = await api.write('/ppp/active/print', [`?name=${username.trim()}`]);
-    return activeUsers && activeUsers.length > 0 ? activeUsers[0] : null;
-}
-
-// Helper penutup koneksi yang aman tanpa merusak loop event
-async function safeCloseMikrotik(api) {
-    if (!api) return;
-    try {
-        await api.close();
-    } catch (e) {
-        console.error('⚠️ Gagal menutup API secara bersih:', e.message);
-    }
-}
-
-// ==========================================
-// 5. MESSAGE HANDLER (PUBLIC ACCESS)
-// ==========================================
-client.on('message_create', async (msg) => {
-    try {
-        const text = msg.body.trim();
-        const args = text.split(/\s+/);
-        const command = args[0]?.toLowerCase();
-
-        if (command === 'ping') { await msg.reply('pong 🏓'); return; }
-        
-        if (command === '!menu') {
-            await msg.reply(
-                `📡 *RnBNET BOT HIGH SPEED*\n\n` +
-                `🔍 *CEK REDAMAN:*\n\`!cek [mikrotik] [username]\`\n` +
-                `⚡ *AKTIVASI:*\n\`!aktifkan [mikrotik] [username]\`\n\n` +
-                `📍 *SERVER:* panglejar, perum, cibarola, sukamelang\n\n` +
-                `✅ _Bot ini terbuka untuk umum_`
-            );
-            return;
-        }
-
-        if (['!cek', '!aktifkan'].includes(command)) {
-            if (args.length < 3) {
-                await msg.reply(`❌ *Format Salah*\n\nGunakan: \`${command} [mikrotik] [username]\`\nContoh: \`${command} cibarola liacahyani\``);
-                return;
-            }
-
-            const serverKey = args[1].toLowerCase();
-            const username = args[2];
-
-            if (!config.servers[serverKey]) {
-                const serverList = Object.keys(config.servers).join(', ');
-                await msg.reply(`❌ *Nama MikroTik Salah!*\n\nPilihan yang tersedia:\n• ${serverList}`);
-                return;
-            }
-
-            console.log(`\n📨 [REQUEST] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username}`);
-
-            if (command === '!cek') await handleCekRedaman(msg, serverKey, username);
-            else if (command === '!aktifkan') await handleAktivasi(msg, serverKey, username);
-        }
-
-    } catch (err) {
-        console.error('❌ Handler Error:', err);
-        try { await msg.reply(`❌ *Terjadi Kesalahan*\n\n${err.message}`); } catch (e) {}
-    }
-});
-
-// ==========================================
-// 6. HANDLER CEK REDAMAN
-// ==========================================
-async function handleCekRedaman(msg, serverKey, username) {
-    let api;
-    try {
-        const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
-        api = mikrotikApi;
-
-        await msg.reply(`🔍 Mencari *${username}* di MikroTik *${targetServer.label}*...`);
-        const userObj = await getUserFromMikrotik(api, username);
-        
-        let rawMac = userObj['caller-id'] || 'Any';
-        const activeUser = await getActiveUserFromMikrotik(api, username);
-        if (activeUser) rawMac = activeUser['caller-id'] || rawMac;
-
-        if (!rawMac || rawMac === 'Any') {
-            await msg.reply(`⚠️ *MAC Address tidak terbaca*\n\nUser "${username}" ditemukan, tetapi MAC address tidak tersedia.`);
-            return;
-        }
-
-        const mac = rawMac.trim().toLowerCase();
-        await msg.reply(`📡 *MAC Ditemukan:*\n\`${mac}\`\n\n_Menyisir OLT di cabang ${targetServer.label}..._`);
-
-        const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
-        
-        await msg.reply(
-            `📊 *Hasil Cek Redaman OLT*\n\n` +
-            `👤 *Pelanggan:* ${username}\n` +
-            `💻 *Server:* ${targetServer.label}\n` +
-            `🔒 *MAC:* \`${mac}\`\n\n` +
-            `${hasilOlt}`
-        );
-
-    } catch (err) {
-        await msg.reply(`❌ *Gagal Cek Redaman*\n\n${err.message}`);
+        // Jalankan logika bot utama Anda
+        await executeFn(msg);
+    } catch (error) {
+        console.error("❌ Error dalam eksekusi antrean:", error);
     } finally {
-        await safeCloseMikrotik(api);
+        // Buka kembali kunci bot
+        isBotBusy = false;
+        // Berikan jeda aman 1.5 detik sebelum memproses antrean berikutnya agar resource bersih
+        setTimeout(jalankanAntrean, 1500);
     }
 }
 
-// ==========================================
-// 7. HANDLER AKTIVASI
-// ==========================================
-async function handleAktivasi(msg, serverKey, username) {
-    let api;
-    try {
-        const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
-        api = mikrotikApi;
-
-        await msg.reply(`⏳ *Memproses Open Isolir*\n\n👤 User: ${username}\n💻 Server: ${targetServer.label}\n\n_Mohon tunggu..._`);
+// ==================================================
+// PASANG DI BAGIAN EVENT LISTENER PESAN MASUK
+// ==================================================
+client.on('message', async (msg) => {
+    // Sesuaikan dengan format trigger perintah cek Anda (misal: !cek)
+    if (msg.body.startsWith('!cek')) {
         
-        const userObj = await getUserFromMikrotik(api, username);
-        
-        // FIX FORMAT: Menggunakan kaidah penulisan parameter node-routeros yang tepat & aman
-        await api.write('/ppp/secret/set', [`=.id=${userObj['.id']}`, '=disabled=no']);
-        await new Promise(r => setTimeout(r, 2500)); // Jeda waktu agar sistem mencatat sinkronisasi pppoe
+        // Bungkus logika pengecekan utama Anda ke dalam fungsi tugas (Task)
+        const taskPengecekan = async (currentMsg) => {
+            try {
+                // --- KODE UTAMA MIKROTIK & PARSING ANDA DI SINI ---
+                // Contoh alur lama Anda:
+                // const api = new RouterOSAPI({...});
+                // ... Ambil data username, paket, server, dan MAC ...
+                
+                // Saat memanggil scanSemuaOlt, PASTIKAN sertakan parameter 'currentMsg'
+                // agar hasil redaman bisa langsung dikirim balik ke chat pembaca.
+                const hasilOlt = await scanSemuaOlt(targetServer.olts, mac, currentMsg);
+                
+                // Laporan penutup scan selesai
+                await currentMsg.reply(
+                    `✨ *RnB Network - Laporan Akhir*\n\n` +
+                    `👤 *Pelanggan:* ${username}\n` +
+                    `💻 *Server:* ${targetServer.label}\n` +
+                    `🔒 *MAC OLT:* \`${mac}\`\n\n` +
+                    `${hasilOlt}`
+                );
+            } catch (err) {
+                await currentMsg.reply(`❌ *Gagal Aktivasi/Pengecekan*:\n${err.message}`);
+            }
+        };
 
-        const activeUser = await getActiveUserFromMikrotik(api, username);
-        let ip = userObj['remote-address'] || 'Dynamic';
-        let rawMac = userObj['caller-id'] || 'Any';
-        const paket = userObj.profile || 'default';
+        // Masukkan pesan ke daftar antrean
+        commandQueue.push({ msg: msg, executeFn: taskPengecekan });
 
-        if (activeUser) {
-            ip = activeUser.address || ip;
-            rawMac = activeUser['caller-id'] || rawMac;
-        }
-
-        let report = 
-            `✨ *RnB Network - Aktivasi Sukses*\n\n` +
-            `✅ *Status:* BERHASIL\n` +
-            `👤 *Pelanggan:* ${username}\n` +
-            `🛜 *Paket:* ${paket}\n` +
-            `💻 *Server:* ${targetServer.label}\n` +
-            `🌐 *IP:* ${ip}\n` +
-            `🔒 *MAC Asli:* \`${rawMac}\`\n`;
-
-        if (rawMac && rawMac !== 'Any') {
-            const mac = rawMac.trim().toLowerCase();
-            report += `✂️ *MAC OLT:* \`${mac}\`\n\n🔍 _Menyisir OLT otomatis..._`;
-            await msg.reply(report);
-            
-            const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
+        // Jika bot sedang sibuk, beri tahu pengguna posisi antreannya
+        if (isBotBusy) {
             await msg.reply(
-                `✨ *RnB Network - Final Report*\\n\\n` +
-                `👤 *Pelanggan:* ${username}\n` +
-                `💻 *Server:* ${targetServer.label}\n` +
-                `🔒 *MAC OLT:* \`${mac}\`\n\n` +
-                `${hasilOlt}`
+                `⏳ *[ANTREAN BOT RnB]*\n\n` +
+                `Bot sedang memproses permintaan hp lain agar tidak *hang/bentrok*.\n` +
+                `Permintaan Anda aman di *Antrean #${commandQueue.length}* dan akan diproses otomatis jika giliran tiba.`
             );
-        } else {
-            report += `\n⚠️ _Pengecekan OLT dilewati karena MAC tidak terbaca._`;
-            await msg.reply(report);
         }
-    } catch (err) {
-        await msg.reply(`❌ *Gagal Aktivasi*\n\n${err.message}`);
-    } finally {
-        await safeCloseMikrotik(api);
+
+        // Trigger jalankan antrean
+        jalankanAntrean();
     }
-}
-
-// ==========================================
-// 8. GLOBAL ERROR HANDLING (SAFETY NET)
-// ==========================================
-process.on('unhandledRejection', err => console.error('❌ UNHANDLED REJECTION:', err));
-process.on('uncaughtException', err => {
-    if (err.message && (err.message.includes('Timed out') || err.message.includes('not connected'))) return;
-    console.error('❌ UNCAUGHT EXCEPTION:', err);
 });
-
-client.initialize().catch(console.error);
