@@ -1,4 +1,4 @@
-// oltService.js - STREAMING REAL-TIME VERSION
+// oltService.js - STREAMING REAL-TIME VERSION (LENGKAP)
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -127,7 +127,6 @@ async function cekRedamanHioso(oltConfig, mac) {
 
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
         
-        // ✅ SEMUA HIOSO MENGGUNAKAN HTTP Basic Auth
         await page.authenticate({ username: user, password: pass });
         await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
         console.log(`   ✅ HTTP Basic Auth sukses`);
@@ -167,7 +166,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                     if (allOnuLink) allOnuLink.click();
                 });
             } catch (err) {
-                console.log(`   ️ Gagal klik All ONU: ${err.message}`);
+                console.log(`   ⚠️ Gagal klik All ONU: ${err.message}`);
             }
             
             await new Promise(r => setTimeout(r, 4000));
@@ -196,7 +195,6 @@ async function cekRedamanHioso(oltConfig, mac) {
                 console.log(`   ⚠️ Tabel tidak ditemukan...`);
             }
 
-            // Coba ubah limit tabel
             try {
                 await mainFrame.evaluate(() => {
                     if (typeof setNumPerPage === 'function') setNumPerPage(300);
@@ -207,8 +205,8 @@ async function cekRedamanHioso(oltConfig, mac) {
                 // Abaikan
             }
 
-            //  FITUR BARU: AUTO-RETRY PENCARIAN MAC
-            console.log(`    Mulai pencarian MAC (dengan Auto-Retry)...`);
+            // AUTO-RETRY PENCARIAN MAC
+            console.log(`   🔍 Mulai pencarian MAC (dengan Auto-Retry)...`);
             let rxPowerResult = null;
             
             for (let retry = 1; retry <= 3; retry++) {
@@ -230,7 +228,7 @@ async function cekRedamanHioso(oltConfig, mac) {
 
                 if (rxPowerResult) {
                     console.log(`   ✅ Ditemukan pada percobaan ke-${retry}! Redaman: ${rxPowerResult} dBm`);
-                    break; // Keluar dari loop jika ketemu
+                    break;
                 } else {
                     console.log(`   ⏳ Data tabel belum lengkap, menunggu 3 detik dan coba lagi (${retry}/3)...`);
                     await new Promise(r => setTimeout(r, 3000));
@@ -277,10 +275,10 @@ async function cekRedamanHioso(oltConfig, mac) {
             try {
                 await targetFrame.waitForSelector('table tr', { timeout: 20000 });
             } catch (err) {
-                console.log(`   ️ Tabel tidak ditemukan...`);
+                console.log(`   ⚠️ Tabel tidak ditemukan...`);
             }
 
-            // 🚀 FITUR BARU: AUTO-RETRY PENCARIAN MAC (Untuk Single Login juga)
+            // AUTO-RETRY PENCARIAN MAC
             let rxPowerResult = null;
             for (let retry = 1; retry <= 3; retry++) {
                 rxPowerResult = await targetFrame.evaluate((macToFind) => {
@@ -328,18 +326,56 @@ async function cekRedamanHioso(oltConfig, mac) {
         await browser.close();
     }
 }
+
+// ==========================================
+// 4. SCAN SEMUA OLT (DENGAN CALLBACK STREAMING)
+// ==========================================
+async function scanSemuaOlt(oltList, mac, onFoundCallback) {
+    console.log(`\n========================================`);
+    console.log(`🚀 MULAI SCAN ${oltList.length} OLT...`);
+    console.log(`========================================`);
+    
+    const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
+    const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
+
+    // 1. Scan HSAirpo (Cepat & Paralel)
+    if (axiosOlts.length > 0) {
+        console.log(`\n⚡ Menjalankan ${axiosOlts.length} HSAirpo secara paralel...`);
+        const axiosPromises = axiosOlts.map(async (olt) => {
+            let hasil = null;
+            if (olt.method === 'cibarola') {
+                hasil = await cekRedamanHSAirpoCibarola(olt, mac);
+            } else {
+                hasil = await cekRedamanHSAirpoAPI(olt, mac);
+            }
+            
+            // 🚀 LANGSUNG KIRIM KE WA JIKA SUKSES
+            if (hasil && !hasil.error && onFoundCallback) {
+                const text = `✅ *${hasil.olt_name}*\n📉 Redaman: *${hasil.redaman}*\n📡 Status: ${hasil.status}`;
+                await onFoundCallback(text);
+            }
+            return { olt, hasil };
+        });
+        await Promise.all(axiosPromises);
+    }
+
     // 2. Scan Hioso (Lambat & Berurutan)
     if (puppeteerOlts.length > 0) {
+        console.log(`\n🐢 Menjalankan ${puppeteerOlts.length} Hioso secara berurutan...`);
         for (const olt of puppeteerOlts) {
             const hasil = await cekRedamanHioso(olt, mac);
             
-            //  LANGSUNG KIRIM KE WA JIKA SUKSES
+            // 🚀 LANGSUNG KIRIM KE WA JIKA SUKSES
             if (hasil && !hasil.error && onFoundCallback) {
-                const text = `✅ *${hasil.olt_name}*\n Redaman: *${hasil.redaman}*\n📡 Status: ${hasil.status}`;
+                const text = `✅ *${hasil.olt_name}*\n📉 Redaman: *${hasil.redaman}*\n📡 Status: ${hasil.status}`;
                 await onFoundCallback(text);
             }
         }
     }
+
+    console.log(`\n========================================`);
+    console.log(`✅ SCAN SELESAI!`);
+    console.log(`========================================\n`);
 }
 
 module.exports = { scanSemuaOlt };
