@@ -101,7 +101,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. Hioso (Puppeteer) - FIXED WITH AUTO-RETRY
+// 3. Hioso (Puppeteer) - FIXED untuk SEMUA MODE
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     let searchMac = mac.substring(0, 16);
@@ -127,11 +127,15 @@ async function cekRedamanHioso(oltConfig, mac) {
 
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
         
+        // ✅ SEMUA HIOSO MENGGUNAKAN HTTP Basic Auth
         await page.authenticate({ username: user, password: pass });
-        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        
+        // ✅ PERUBAHAN 1: Gunakan networkidle2 untuk stabilitas lebih baik
+        await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 20000 });
         console.log(`   ✅ HTTP Basic Auth sukses`);
         
-        await new Promise(r => setTimeout(r, 3000));
+        // ✅ PERUBAHAN 2: Naikkan delay awal dari 3 detik → 5 detik
+        await new Promise(r => setTimeout(r, 5000));
 
         // ==========================================
         // MODE 1: IFRAME = true (Cibarola & 8Pon)
@@ -139,8 +143,9 @@ async function cekRedamanHioso(oltConfig, mac) {
         if (oltConfig.iframe) {
             console.log(`   Mode: HTTP Basic Auth + Iframe`);
             
+            // ✅ PERUBAHAN 3: Naikkan retry interval & total retry
             let leftFrame = null;
-            for (let attempt = 1; attempt <= 15; attempt++) {
+            for (let attempt = 1; attempt <= 20; attempt++) {
                 const frames = page.frames();
                 leftFrame = frames.find(f => 
                     f.name() === 'leftFrame' || 
@@ -148,13 +153,19 @@ async function cekRedamanHioso(oltConfig, mac) {
                     (f.url() && (f.url().includes('menu') || f.url().includes('left')))
                 );
                 if (leftFrame) break;
-                await new Promise(r => setTimeout(r, 1000));
+                
+                // ✅ PERUBAHAN 4: Naikkan interval dari 1 detik → 2 detik
+                await new Promise(r => setTimeout(r, 2000));
             }
             
             if (!leftFrame) {
+                const allFrames = page.frames();
+                console.log(`   📋 Frames yang terdeteksi: ${allFrames.map(f => `"${f.name()}"`).join(', ')}`);
                 throw new Error('Gagal memuat menu frame');
             }
+            console.log(`   ✅ leftFrame ditemukan: "${leftFrame.name()}"`);
 
+            // Klik "All ONU" di menu
             try {
                 await leftFrame.waitForSelector('a', { timeout: 10000 });
                 await leftFrame.evaluate(() => {
@@ -165,14 +176,16 @@ async function cekRedamanHioso(oltConfig, mac) {
                     );
                     if (allOnuLink) allOnuLink.click();
                 });
+                console.log(`   ✅ Klik All ONU sukses`);
             } catch (err) {
                 console.log(`   ⚠️ Gagal klik All ONU: ${err.message}`);
             }
             
             await new Promise(r => setTimeout(r, 4000));
 
+            // Cari mainFrame untuk tabel
             let mainFrame = null;
-            for (let attempt = 1; attempt <= 15; attempt++) {
+            for (let attempt = 1; attempt <= 20; attempt++) {
                 const frames = page.frames();
                 mainFrame = frames.find(f => 
                     f.name() === 'mainFrame' || 
@@ -181,31 +194,43 @@ async function cekRedamanHioso(oltConfig, mac) {
                     (f.url() && f.url().includes('onu'))
                 );
                 if (mainFrame) break;
-                await new Promise(r => setTimeout(r, 1000));
+                await new Promise(r => setTimeout(r, 2000));
             }
             
             if (!mainFrame) {
+                const allFrames = page.frames();
+                console.log(`   📋 Frames yang terdeteksi: ${allFrames.map(f => `"${f.name()}"`).join(', ')}`);
                 throw new Error('Gagal memuat main frame');
             }
+            console.log(`   ✅ mainFrame ditemukan: "${mainFrame.name()}"`);
 
+            // Tunggu tabel dimuat
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
             try {
                 await mainFrame.waitForSelector('table tr', { timeout: 20000 });
             } catch (err) {
-                console.log(`   ⚠️ Tabel tidak ditemukan...`);
+                console.log(`   ⚠️ Tabel tidak ditemukan, coba cari elemen lain...`);
             }
 
+            // Coba ubah limit tabel
             try {
                 await mainFrame.evaluate(() => {
                     if (typeof setNumPerPage === 'function') setNumPerPage(300);
                     else if (typeof OnPageSizeChange === 'function') OnPageSizeChange(300);
+                    else {
+                        const sel = document.querySelector('select');
+                        if (sel) {
+                            sel.value = sel.options[sel.options.length - 1].value;
+                            sel.dispatchEvent(new Event('change'));
+                        }
+                    }
                 });
                 await new Promise(r => setTimeout(r, 3000));
             } catch (err) {
-                // Abaikan
+                // Abaikan error
             }
 
-            // AUTO-RETRY PENCARIAN MAC
+            // ✅ AUTO-RETRY PENCARIAN MAC (sudah ada di kode Anda)
             console.log(`   🔍 Mulai pencarian MAC (dengan Auto-Retry)...`);
             let rxPowerResult = null;
             
@@ -248,34 +273,37 @@ async function cekRedamanHioso(oltConfig, mac) {
         // MODE 2: IFRAME = false (Perum & 4Pon)
         // ==========================================
         } else {
-            console.log(`   Mode: HTTP Basic Auth + Direct URL`);
+            console.log(`   Mode: HTTP Basic Auth + Direct URL (Single Login)`);
             
-            await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await new Promise(r => setTimeout(r, 3000));
+            await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+            await new Promise(r => setTimeout(r, 5000));
 
             if (await page.$('#a')) {
                 console.log(`   🔑 Mengisi form login web...`);
                 await page.type('#a', user);
                 await page.type('#b', pass);
                 await page.click('input[type="button"]');
-                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
                 await new Promise(r => setTimeout(r, 3000));
             }
 
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2', timeout: 30000 });
             await new Promise(r => setTimeout(r, 3000));
             
             let targetFrame = page;
             const frames = page.frames();
             if (frames.length > 1) {
                 targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
+                console.log(`   ✅ Frame ditemukan: ${frames.length} frames`);
+            } else {
+                console.log(`   ℹ️ Tidak ada frame, gunakan main page`);
             }
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
             try {
                 await targetFrame.waitForSelector('table tr', { timeout: 20000 });
             } catch (err) {
-                console.log(`   ⚠️ Tabel tidak ditemukan...`);
+                console.log(`   ⚠️ Tabel tidak ditemukan: ${err.message}`);
             }
 
             // AUTO-RETRY PENCARIAN MAC
@@ -326,7 +354,6 @@ async function cekRedamanHioso(oltConfig, mac) {
         await browser.close();
     }
 }
-
 // ==========================================
 // 4. SCAN SEMUA OLT (DENGAN CALLBACK STREAMING)
 // ==========================================
