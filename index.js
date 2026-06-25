@@ -1,4 +1,4 @@
-// index.js - RnBNET BOT (Public Access - No Whitelist)
+// index.js - RnBNET BOT (Public Access - Anti-Hang & High Performance)
 const path = require('path');
 const express = require('express');
 const qrcode = require('qrcode');
@@ -50,7 +50,7 @@ client.on('disconnected', (reason) => {
 });
 
 // ==========================================
-// 4. HELPER MIKROTIK
+// 4. HELPER MIKROTIK (HIGHLY OPTIMIZED)
 // ==========================================
 async function connectMikrotik(serverKey) {
     const targetServer = config.servers[serverKey];
@@ -61,27 +61,43 @@ async function connectMikrotik(serverKey) {
         port: targetServer.mikrotik.port,
         user: targetServer.mikrotik.user,
         password: targetServer.mikrotik.pass,
-        timeout: 15
+        timeout: 10 // Timeout dipersingkat agar tidak hang lama saat gangguan
+    });
+    
+    // CRITICAL FIX: Tangkap error event pada socket agar bot TIDAK CRASH/HANG saat koneksi drop
+    api.on('error', (err) => {
+        console.error(`⚠️ [MikroTik Socket Error - ${targetServer.label}]:`, err.message);
     });
     
     try {
         await api.connect();
         return { api, targetServer };
     } catch (err) {
-        throw new Error(`Gagal konek MikroTik ${targetServer.label}. Cek port API.`);
+        throw new Error(`Gagal konek MikroTik ${targetServer.label}. API port tertutup atau jaringan putus.`);
     }
 }
 
 async function getUserFromMikrotik(api, username) {
-    const secrets = await api.write('/ppp/secret/print');
-    const userObj = secrets.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
-    if (!userObj) throw new Error(`User "${username}" tidak ditemukan`);
-    return userObj;
+    // ANTI-HANG FIX: Query langsung nama user di MikroTik (sangat ringan & instant)
+    const secrets = await api.write('/ppp/secret/print', [`?name=${username.trim()}`]);
+    if (!secrets || secrets.length === 0) throw new Error(`User "${username}" tidak ditemukan`);
+    return secrets[0];
 }
 
 async function getActiveUserFromMikrotik(api, username) {
-    const activeUsers = await api.write('/ppp/active/print');
-    return activeUsers.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
+    // ANTI-HANG FIX: Query langsung nama active user di MikroTik
+    const activeUsers = await api.write('/ppp/active/print', [`?name=${username.trim()}`]);
+    return activeUsers && activeUsers.length > 0 ? activeUsers[0] : null;
+}
+
+// Helper penutup koneksi yang aman tanpa merusak loop event
+async function safeCloseMikrotik(api) {
+    if (!api) return;
+    try {
+        await api.close();
+    } catch (e) {
+        console.error('⚠️ Gagal menutup API secara bersih:', e.message);
+    }
 }
 
 // ==========================================
@@ -93,7 +109,6 @@ client.on('message_create', async (msg) => {
         const args = text.split(/\s+/);
         const command = args[0]?.toLowerCase();
 
-        // Perintah Publik
         if (command === 'ping') { await msg.reply('pong 🏓'); return; }
         
         if (command === '!menu') {
@@ -107,9 +122,7 @@ client.on('message_create', async (msg) => {
             return;
         }
 
-        // Perintah !cek dan !aktifkan (BISA DIAKSES SIAPA SAJA)
         if (['!cek', '!aktifkan'].includes(command)) {
-            
             if (args.length < 3) {
                 await msg.reply(`❌ *Format Salah*\n\nGunakan: \`${command} [mikrotik] [username]\`\nContoh: \`${command} cibarola liacahyani\``);
                 return;
@@ -124,7 +137,6 @@ client.on('message_create', async (msg) => {
                 return;
             }
 
-            // Log untuk monitoring (opsional)
             console.log(`\n📨 [REQUEST] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username}`);
 
             if (command === '!cek') await handleCekRedaman(msg, serverKey, username);
@@ -174,7 +186,7 @@ async function handleCekRedaman(msg, serverKey, username) {
     } catch (err) {
         await msg.reply(`❌ *Gagal Cek Redaman*\n\n${err.message}`);
     } finally {
-        try { if (api) await api.close(); } catch (e) {}
+        await safeCloseMikrotik(api);
     }
 }
 
@@ -190,8 +202,10 @@ async function handleAktivasi(msg, serverKey, username) {
         await msg.reply(`⏳ *Memproses Open Isolir*\n\n👤 User: ${username}\n💻 Server: ${targetServer.label}\n\n_Mohon tunggu..._`);
         
         const userObj = await getUserFromMikrotik(api, username);
-        await api.write(['/ppp/secret/set', `=.id=${userObj['.id']}`, '=disabled=no']);
-        await new Promise(r => setTimeout(r, 2000));
+        
+        // FIX FORMAT: Menggunakan kaidah penulisan parameter node-routeros yang tepat & aman
+        await api.write('/ppp/secret/set', [`=.id=${userObj['.id']}`, '=disabled=no']);
+        await new Promise(r => setTimeout(r, 2500)); // Jeda waktu agar sistem mencatat sinkronisasi pppoe
 
         const activeUser = await getActiveUserFromMikrotik(api, username);
         let ip = userObj['remote-address'] || 'Dynamic';
@@ -219,7 +233,7 @@ async function handleAktivasi(msg, serverKey, username) {
             
             const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
             await msg.reply(
-                `✨ *RnB Network - Final Report*\n\n` +
+                `✨ *RnB Network - Final Report*\\n\\n` +
                 `👤 *Pelanggan:* ${username}\n` +
                 `💻 *Server:* ${targetServer.label}\n` +
                 `🔒 *MAC OLT:* \`${mac}\`\n\n` +
@@ -232,17 +246,17 @@ async function handleAktivasi(msg, serverKey, username) {
     } catch (err) {
         await msg.reply(`❌ *Gagal Aktivasi*\n\n${err.message}`);
     } finally {
-        try { if (api) await api.close(); } catch (e) {}
+        await safeCloseMikrotik(api);
     }
 }
 
 // ==========================================
-// 8. ERROR HANDLING
+// 8. GLOBAL ERROR HANDLING (SAFETY NET)
 // ==========================================
-process.on('unhandledRejection', err => console.error('❌ UNHANDLED:', err));
+process.on('unhandledRejection', err => console.error('❌ UNHANDLED REJECTION:', err));
 process.on('uncaughtException', err => {
-    if (err.name === 'RosException' && err.message.includes('Timed out')) return;
-    console.error('❌ UNCAUGHT:', err);
+    if (err.message && (err.message.includes('Timed out') || err.message.includes('not connected'))) return;
+    console.error('❌ UNCAUGHT EXCEPTION:', err);
 });
 
 client.initialize().catch(console.error);
