@@ -32,7 +32,7 @@ module.exports = {
             label: 'Sukamelang',
             mikrotik: { host: '103.191.165.126', port: 8728, user: 'berry', pass: 'Subang21' },
             olts: [
-                // Urutan diprioritaskan: HSAirpo -> Hioso 4Pon -> Hioso 8Pon
+                // Prioritas: HSAirpo -> Hioso 4Pon -> Hioso 8Pon
                 { type: 'HSAirpo', label: 'HSAirpo Sukamelang', ip: '103.191.165.126', port: 9900, user: 'root', pass: 'admin' },
                 { type: 'Hioso', label: 'Hioso 4Pon Sukamelang', ip: '103.191.165.126', port: 670, user: 'admin', pass: 'admin', iframe: false },
                 { type: 'Hioso', label: 'Hioso 8Pon Sukamelang', ip: '103.191.165.126', port: 680, user: 'admin', pass: 'admin', iframe: true }
