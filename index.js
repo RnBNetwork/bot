@@ -149,7 +149,7 @@ client.on('message_create', async (msg) => {
 });
 
 // ==========================================
-// 6. HANDLER CEK REDAMAN
+// 6. HANDLER CEK REDAMAN (STREAMING MODE)
 // ==========================================
 async function handleCekRedaman(msg, serverKey, username) {
     let api;
@@ -157,7 +157,7 @@ async function handleCekRedaman(msg, serverKey, username) {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
         
-        await msg.reply(`🔍 Mencari *${username}* di MikroTik *${targetServer.label}*...`);
+        await msg.reply(` Mencari *${username}* di MikroTik *${targetServer.label}*...`);
         const userObj = await getUserFromMikrotik(api, username);
         
         let rawMac = userObj['caller-id'] || 'Any';
@@ -170,17 +170,19 @@ async function handleCekRedaman(msg, serverKey, username) {
         }
 
         const mac = rawMac.trim().toLowerCase();
-        await msg.reply(`📡 *MAC Ditemukan:*\n\`${mac}\`\n\n_Menyisir OLT di cabang ${targetServer.label}..._`);
+        await msg.reply(` *MAC Ditemukan:*\n\`${mac}\`\n\n⏳ _Menyisir OLT... Hasil akan dikirim langsung saat ditemukan._`);
 
-        const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
-        
-        await msg.reply(
-            `📊 *Hasil Cek Redaman OLT*\n\n` +
-            `👤 *Pelanggan:* ${username}\n` +
-            `💻 *Server:* ${targetServer.label}\n` +
-            `🔒 *MAC:* \`${mac}\`\n\n` +
-            `${hasilOlt}`
-        );
+        // 🚀 STREAMING CALLBACK: Kirim pesan ke WA secepatnya saat OLT menemukan redaman
+        let adaHasil = false;
+        await scanSemuaOlt(targetServer.olts, mac, async (textHasil) => {
+            await msg.reply(textHasil);
+            adaHasil = true;
+        });
+
+        // Jika setelah semua OLT discan tidak ada yang ketemu
+        if (!adaHasil) {
+            await msg.reply('⚠️ ONU tidak ditemukan di OLT manapun pada cabang ini.');
+        }
 
     } catch (err) {
         await msg.reply(`❌ *Gagal Cek Redaman*\n\n${err.message}`);
@@ -188,7 +190,6 @@ async function handleCekRedaman(msg, serverKey, username) {
         await safeCloseMikrotik(api);
     }
 }
-
 // ==========================================
 // 7. HANDLER AKTIVASI
 // ==========================================
