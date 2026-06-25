@@ -32,9 +32,15 @@ module.exports = {
             label: 'Sukamelang',
             mikrotik: { host: '103.191.165.126', port: 8728, user: 'berry', pass: 'Subang21' },
             olts: [
-                { type: 'Hioso', label: 'Hioso 8Pon Sukamelang', ip: '103.191.165.126', port: 680, user: 'admin', pass: 'admin', iframe: true },
+                // ✅ URUTAN BARU:
+                // 1. HSAirpo (paling cepat, scan pertama)
+                { type: 'HSAirpo', label: 'HSAirpo Sukamelang', ip: '103.191.165.126', port: 9900, user: 'root', pass: 'admin' },
+                
+                // 2. Hioso 4Pon (scan kedua)
                 { type: 'Hioso', label: 'Hioso 4Pon Sukamelang', ip: '103.191.165.126', port: 670, user: 'admin', pass: 'admin', iframe: false },
-                { type: 'HSAirpo', label: 'HSAirpo Sukamelang', ip: '103.191.165.126', port: 9900, user: 'root', pass: 'admin' }
+                
+                // 3. Hioso 8Pon (paling lambat, scan terakhir)
+                { type: 'Hioso', label: 'Hioso 8Pon Sukamelang', ip: '103.191.165.126', port: 680, user: 'admin', pass: 'admin', iframe: true }
             ]
         }
     }
