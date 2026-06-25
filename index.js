@@ -1,16 +1,17 @@
-// index.js - RnBNET BOT (Public Access - Queue Mutex System)
+// index.js - RnBNET BOT (Public Access - No Whitelist)
 const path = require('path');
 const express = require('express');
 const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const RouterOSAPI = require('node-routeros').RouterOSAPI;
+
 const config = require('./config');
 const { scanSemuaOlt } = require('./oltService');
 
 // ==========================================
 // 1. WEB SERVER
 // ==========================================
-const app = report = express();
+const app = express();
 app.use(express.static(path.join(__dirname)));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 const PORT = process.env.PORT || 8080;
@@ -29,31 +30,7 @@ const client = new Client({
 });
 
 // ==========================================
-// 3. MUTEX QUEUE SYSTEM (Sistem Antrean Perintah Otomatis)
-// ==========================================
-const commandQueue = [];
-let isBotBusy = false;
-
-async function executeQueue() {
-    if (isBotBusy || commandQueue.length === 0) return;
-    
-    isBotBusy = true;
-    const currentTask = commandQueue.shift();
-    
-    try {
-        console.log(`\n⚡ [QUEUE] Menjalankan perintah antrean milik: ${currentTask.sender}`);
-        await currentTask.action();
-    } catch (err) {
-        console.error('❌ Error executing task in queue:', err);
-    } finally {
-        isBotBusy = false;
-        // Otomatis lanjutkan perintah orang berikutnya tanpa jeda manual
-        setTimeout(executeQueue, 1000);
-    }
-}
-
-// ==========================================
-// 4. EVENT LISTENER
+// 3. EVENT LISTENER
 // ==========================================
 console.log('🤖 BOT STARTING...');
 client.on('qr', async (qr) => {
@@ -73,22 +50,12 @@ client.on('disconnected', (reason) => {
 });
 
 // ==========================================
-// 5. HELPER MIKROTIK
+// 4. HELPER MIKROTIK
 // ==========================================
-function withTimeout(promise, ms, errMsg) {
-    let timeoutId;
-    const timeoutPromise = new Promise((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(errMsg)), ms);
-    });
-    return Promise.race([
-        promise.finally(() => clearTimeout(timeoutId)),
-        timeoutPromise
-    ]);
-}
-
 async function connectMikrotik(serverKey) {
     const targetServer = config.servers[serverKey];
     if (!targetServer) throw new Error(`Server "${serverKey}" tidak ditemukan`);
+    
     const api = new RouterOSAPI({
         host: targetServer.mikrotik.host,
         port: targetServer.mikrotik.port,
@@ -96,34 +63,29 @@ async function connectMikrotik(serverKey) {
         password: targetServer.mikrotik.pass,
         timeout: 15
     });
-
+    
     try {
-        await withTimeout(api.connect(), 15000, `Timeout koneksi ke MikroTik ${targetServer.label}.`);
+        await api.connect();
         return { api, targetServer };
     } catch (err) {
-        throw new Error(`Gagal konek MikroTik ${targetServer.label}. Cek port API atau network.`);
+        throw new Error(`Gagal konek MikroTik ${targetServer.label}. Cek port API.`);
     }
 }
 
 async function getUserFromMikrotik(api, username) {
-    const secrets = await withTimeout(api.write('/ppp/secret/print'), 25000, 'Timeout: MikroTik terlalu lambat merespons (Query Secret).');
+    const secrets = await api.write('/ppp/secret/print');
     const userObj = secrets.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
     if (!userObj) throw new Error(`User "${username}" tidak ditemukan`);
     return userObj;
 }
 
 async function getActiveUserFromMikrotik(api, username) {
-    const activeUsers = await withTimeout(api.write('/ppp/active/print'), 25000, 'Timeout: MikroTik terlalu lambat merespons (Query Active).');
+    const activeUsers = await api.write('/ppp/active/print');
     return activeUsers.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
 }
 
-async function safeCloseMikrotik(api) {
-    if (!api) return;
-    try { await withTimeout(api.close(), 5000, 'Close timeout'); } catch (e) {}
-}
-
 // ==========================================
-// 6. MESSAGE HANDLER (PUBLIC ACCESS WITH QUEUE)
+// 5. MESSAGE HANDLER (PUBLIC ACCESS)
 // ==========================================
 client.on('message_create', async (msg) => {
     try {
@@ -131,6 +93,7 @@ client.on('message_create', async (msg) => {
         const args = text.split(/\s+/);
         const command = args[0]?.toLowerCase();
 
+        // Perintah Publik
         if (command === 'ping') { await msg.reply('pong 🏓'); return; }
         
         if (command === '!menu') {
@@ -144,7 +107,9 @@ client.on('message_create', async (msg) => {
             return;
         }
 
+        // Perintah !cek dan !aktifkan (BISA DIAKSES SIAPA SAJA)
         if (['!cek', '!aktifkan'].includes(command)) {
+            
             if (args.length < 3) {
                 await msg.reply(`❌ *Format Salah*\n\nGunakan: \`${command} [mikrotik] [username]\`\nContoh: \`${command} cibarola liacahyani\``);
                 return;
@@ -159,21 +124,11 @@ client.on('message_create', async (msg) => {
                 return;
             }
 
-            // Definisikan fungsi bungkus aksi utama
-            const taskAction = async () => {
-                console.log(`\n📨 [REQUEST PROCESSED] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username}`);
-                if (command === '!cek') await handleCekRedaman(msg, serverKey, username);
-                else if (command === '!aktifkan') await handleAktivasi(msg, serverKey, username);
-            };
+            // Log untuk monitoring (opsional)
+            console.log(`\n📨 [REQUEST] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username}`);
 
-            // Masuk pengecekan Mutex Antrean
-            if (isBotBusy) {
-                await msg.reply(`⏳ *Bot Sedang Bekerja Memproses Perintah Lain*\n\nMohon tunggu sebentar sampai beres semuanya. Perintah Anda (\`${command} ${serverKey} ${username}\`) sudah masuk antrean dan akan *otomatis dilanjutkan* oleh bot setelah ini selesai.`);
-            }
-
-            // Push ke antrean & jalankan pemicu eksekusi
-            commandQueue.push({ sender: msg.from, action: taskAction });
-            executeQueue();
+            if (command === '!cek') await handleCekRedaman(msg, serverKey, username);
+            else if (command === '!aktifkan') await handleAktivasi(msg, serverKey, username);
         }
 
     } catch (err) {
@@ -183,14 +138,14 @@ client.on('message_create', async (msg) => {
 });
 
 // ==========================================
-// 7. HANDLER CEK REDAMAN (STREAMING RESULTS)
+// 6. HANDLER CEK REDAMAN
 // ==========================================
 async function handleCekRedaman(msg, serverKey, username) {
     let api;
     try {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
-        
+
         await msg.reply(`🔍 Mencari *${username}* di MikroTik *${targetServer.label}*...`);
         const userObj = await getUserFromMikrotik(api, username);
         
@@ -204,52 +159,38 @@ async function handleCekRedaman(msg, serverKey, username) {
         }
 
         const mac = rawMac.trim().toLowerCase();
-        await msg.reply(`📡 *MAC Ditemukan:* \`${mac}\`\n\n_Menyisir OLT di cabang ${targetServer.label}..._`);
+        await msg.reply(`📡 *MAC Ditemukan:*\n\`${mac}\`\n\n_Menyisir OLT di cabang ${targetServer.label}..._`);
 
+        const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
+        
         await msg.reply(
-            `📊 *Proses Pengecekan OLT Dimulai*\n\n` +
+            `📊 *Hasil Cek Redaman OLT*\n\n` +
             `👤 *Pelanggan:* ${username}\n` +
             `💻 *Server:* ${targetServer.label}\n` +
             `🔒 *MAC:* \`${mac}\`\n\n` +
-            `⏳ _Hasil redaman per OLT akan langsung dikirim di bawah ini:_`
+            `${hasilOlt}`
         );
-
-        // Eksekusi scan dengan callback real-time
-        const jumlahDitemukan = await scanSemuaOlt(targetServer.olts, mac, async (hasilOltSatuPerSatu) => {
-            await msg.reply(hasilOltSatuPerSatu);
-        });
-
-        if (jumlahDitemukan === 0) {
-            await msg.reply('⚠️ ONU tidak ditemukan di OLT manapun pada cabang ini.');
-        } else {
-            await msg.reply('✅ _Seluruh proses penyisiran OLT selesai._');
-        }
 
     } catch (err) {
         await msg.reply(`❌ *Gagal Cek Redaman*\n\n${err.message}`);
     } finally {
-        await safeCloseMikrotik(api);
+        try { if (api) await api.close(); } catch (e) {}
     }
 }
 
 // ==========================================
-// 8. HANDLER AKTIVASI (STREAMING RESULTS)
+// 7. HANDLER AKTIVASI
 // ==========================================
 async function handleAktivasi(msg, serverKey, username) {
     let api;
     try {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
-        
+
         await msg.reply(`⏳ *Memproses Open Isolir*\n\n👤 User: ${username}\n💻 Server: ${targetServer.label}\n\n_Mohon tunggu..._`);
+        
         const userObj = await getUserFromMikrotik(api, username);
-        
-        await withTimeout(
-            api.write(['/ppp/secret/set', `=.id=${userObj['.id']}`, '=disabled=no']),
-            15000,
-            'Timeout: Gagal mengirim perintah isolir ke MikroTik.'
-        );
-        
+        await api.write(['/ppp/secret/set', `=.id=${userObj['.id']}`, '=disabled=no']);
         await new Promise(r => setTimeout(r, 2000));
 
         const activeUser = await getActiveUserFromMikrotik(api, username);
@@ -273,18 +214,17 @@ async function handleAktivasi(msg, serverKey, username) {
 
         if (rawMac && rawMac !== 'Any') {
             const mac = rawMac.trim().toLowerCase();
-            report += `✂️ *MAC OLT:* \`${mac}\`\n\n🔍 _Menyisir OLT otomatis (Hasil dikirim real-time)..._`;
+            report += `✂️ *MAC OLT:* \`${mac}\`\n\n🔍 _Menyisir OLT otomatis..._`;
             await msg.reply(report);
             
-            const jumlahDitemukan = await scanSemuaOlt(targetServer.olts, mac, async (hasilOltSatuPerSatu) => {
-                await msg.reply(hasilOltSatuPerSatu);
-            });
-
-            if (jumlahDitemukan === 0) {
-                await msg.reply('⚠️ ONU tidak ditemukan di OLT manapun pada cabang ini setelah diaktivasi.');
-            } else {
-                await msg.reply('✨ *RnB Network - Aktivasi & Seluruh Scan Selesai*');
-            }
+            const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
+            await msg.reply(
+                `✨ *RnB Network - Final Report*\n\n` +
+                `👤 *Pelanggan:* ${username}\n` +
+                `💻 *Server:* ${targetServer.label}\n` +
+                `🔒 *MAC OLT:* \`${mac}\`\n\n` +
+                `${hasilOlt}`
+            );
         } else {
             report += `\n⚠️ _Pengecekan OLT dilewati karena MAC tidak terbaca._`;
             await msg.reply(report);
@@ -292,16 +232,17 @@ async function handleAktivasi(msg, serverKey, username) {
     } catch (err) {
         await msg.reply(`❌ *Gagal Aktivasi*\n\n${err.message}`);
     } finally {
-        await safeCloseMikrotik(api);
+        try { if (api) await api.close(); } catch (e) {}
     }
 }
 
 // ==========================================
-// 9. ERROR HANDLING
+// 8. ERROR HANDLING
 // ==========================================
 process.on('unhandledRejection', err => console.error('❌ UNHANDLED:', err));
 process.on('uncaughtException', err => {
     if (err.name === 'RosException' && err.message.includes('Timed out')) return;
     console.error('❌ UNCAUGHT:', err);
 });
+
 client.initialize().catch(console.error);
