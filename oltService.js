@@ -127,36 +127,45 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
-        page.setDefaultTimeout(35000);
-        page.setDefaultNavigationTimeout(35000);
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(30000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
-        // ❌ JANGAN GUNAKAN page.authenticate() - ini penyebab ERR_INVALID_AUTH_CREDENTIALS!
-        // OLT Hioso menggunakan Web Form Login, BUKAN HTTP Basic Auth.
-
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
-        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+        
+        // ✅ SMART AUTH: Cek authMethod dari config
+        const authMethod = oltConfig.authMethod || 'basic'; // Default: basic
+        
+        if (authMethod === 'basic') {
+            console.log(`   🔐 Menggunakan HTTP Basic Auth...`);
+            await page.authenticate({ username: user, password: pass });
+        } else {
+            console.log(`   🔐 Menggunakan Web Form Login...`);
+        }
+        
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
         await new Promise(r => setTimeout(r, 2000));
 
         // ==========================================
-        // FASE LOGIN PERTAMA
-        // ==========================================
-        if (await page.$('#a')) {
-            console.log(`   🔑 Login pertama...`);
-            await page.type('#a', user);
-            await page.type('#b', pass);
-            await page.click('input[type="button"]');
-            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-            await new Promise(r => setTimeout(r, 2000));
-        }
-
-        // ==========================================
-        // FASE LOGIN KEDUA (DOUBLE LOGIN) - KHUSUS 8PON & CIBAROLA
+        // MODE 1: IFRAME = true (8Pon & Cibarola) - DOUBLE LOGIN WEB FORM
         // ==========================================
         if (oltConfig.iframe) {
+            console.log(`   Mode: Double Login + Iframe`);
+            
+            // LOGIN PERTAMA (Web Form)
+            if (await page.$('#a')) {
+                console.log(`   🔑 Login pertama...`);
+                await page.type('#a', user);
+                await page.type('#b', pass);
+                await page.click('input[type="button"]');
+                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+                await new Promise(r => setTimeout(r, 2000));
+            }
+
+            // LOGIN KEDUA (Double Login)
             if (await page.$('#a')) {
                 console.log(`   🔑 Login kedua (Double Login)...`);
                 await page.evaluate(() => {
@@ -168,17 +177,8 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await page.click('input[type="button"]');
                 await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
                 await new Promise(r => setTimeout(r, 3000));
-            } else {
-                console.log(`   ✅ Login pertama sukses (tidak perlu login kedua)`);
             }
-        }
 
-        // ==========================================
-        // MODE A: IFRAME = true (8Pon & Cibarola) - DOUBLE LOGIN + IFRAME
-        // ==========================================
-        if (oltConfig.iframe) {
-            console.log(`   Mode: Double Login + Iframe`);
-            
             // Cari leftFrame
             let leftFrame = null;
             for (let attempt = 1; attempt <= 15; attempt++) {
