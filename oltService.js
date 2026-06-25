@@ -127,8 +127,8 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
-        page.setDefaultTimeout(30000);
-        page.setDefaultNavigationTimeout(30000);
+        page.setDefaultTimeout(45000);
+        page.setDefaultNavigationTimeout(45000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
@@ -136,38 +136,69 @@ async function cekRedamanHioso(oltConfig, mac) {
 
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
         
-        // ✅ SEMUA HIOSO MENGGUNAKAN HTTP Basic Auth
+        // HTTP Basic Auth
         await page.authenticate({ username: user, password: pass });
-        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 20000 });
         console.log(`   ✅ HTTP Basic Auth sukses`);
         
-        await new Promise(r => setTimeout(r, 3000));
+        // Tunggu halaman stabil
+        await new Promise(r => setTimeout(r, 5000));
 
         // ==========================================
-        // MODE 1: IFRAME = true (Cibarola & 8Pon) - SUDAH SUKSES
+        // MODE 1: IFRAME = true (Cibarola & 8Pon)
         // ==========================================
         if (oltConfig.iframe) {
             console.log(`   Mode: HTTP Basic Auth + Iframe`);
             
-            // Cari leftFrame untuk menu
+            // DEBUG: Tampilkan semua frame yang tersedia
+            console.log(`   🔍 Scanning frames...`);
+            let allFrames = page.frames();
+            console.log(`   📊 Total frames terdeteksi: ${allFrames.length}`);
+            allFrames.forEach((f, i) => {
+                console.log(`      Frame ${i}: name="${f.name()}", url="${f.url()}"`);
+            });
+
+            // RETRY LOOP: Cari leftFrame dengan berbagai kemungkinan
             let leftFrame = null;
             for (let attempt = 1; attempt <= 15; attempt++) {
-                const frames = page.frames();
-                leftFrame = frames.find(f => 
-                    f.name() === 'leftFrame' || 
-                    f.name() === 'menuFrame' ||
-                    (f.url() && (f.url().includes('menu') || f.url().includes('left')))
-                );
-                if (leftFrame) break;
-                await new Promise(r => setTimeout(r, 1000));
+                allFrames = page.frames();
+                
+                // Metode 1: Cari by exact name
+                leftFrame = allFrames.find(f => f.name() === 'leftFrame');
+                
+                // Metode 2: Cari by partial name
+                if (!leftFrame) {
+                    leftFrame = allFrames.find(f => 
+                        f.name() && (f.name().toLowerCase().includes('left') || f.name().toLowerCase().includes('menu'))
+                    );
+                }
+                
+                // Metode 3: Cari by URL pattern
+                if (!leftFrame) {
+                    leftFrame = allFrames.find(f => 
+                        f.url() && (f.url().includes('menu') || f.url().includes('left') || f.url().includes('nav'))
+                    );
+                }
+                
+                // Metode 4: Frame pertama yang bukan main content
+                if (!leftFrame && allFrames.length > 1) {
+                    leftFrame = allFrames[1]; // Biasanya frame kedua adalah menu
+                }
+
+                if (leftFrame) {
+                    console.log(`   ✅ leftFrame ditemukan di attempt ${attempt}: "${leftFrame.name()}"`);
+                    break;
+                }
+                
+                console.log(`   ⏳ Retry ${attempt}/15 - Frame belum ready...`);
+                await new Promise(r => setTimeout(r, 2000));
             }
             
             if (!leftFrame) {
-                const allFrames = page.frames();
-                console.log(`   📋 Frames yang terdeteksi: ${allFrames.map(f => `"${f.name()}"`).join(', ')}`);
-                throw new Error('Gagal memuat menu frame');
+                allFrames = page.frames();
+                const frameInfo = allFrames.map((f, i) => `      [${i}] name="${f.name()}" url="${f.url()}"`).join('\n');
+                throw new Error(`Gagal memuat menu frame setelah 15x retry.\n   Detail frames:\n${frameInfo}`);
             }
-            console.log(`   ✅ leftFrame ditemukan: "${leftFrame.name()}"`);
 
             // Klik "All ONU" di menu
             try {
@@ -178,45 +209,74 @@ async function cekRedamanHioso(oltConfig, mac) {
                         link.innerText.trim() === 'All ONU' || 
                         link.innerText.trim().toLowerCase().includes('all onu')
                     );
-                    if (allOnuLink) allOnuLink.click();
+                    if (allOnuLink) {
+                        console.log(`   ✅ Klik All ONU`);
+                        allOnuLink.click();
+                    } else {
+                        console.log(`   ⚠️ Link All ONU tidak ditemukan`);
+                    }
                 });
-                console.log(`   ✅ Klik All ONU sukses`);
             } catch (err) {
                 console.log(`   ⚠️ Gagal klik All ONU: ${err.message}`);
             }
             
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, 4000));
 
-            // Cari mainFrame untuk tabel
+            // Cari mainFrame dengan berbagai kemungkinan
             let mainFrame = null;
             for (let attempt = 1; attempt <= 15; attempt++) {
-                const frames = page.frames();
-                mainFrame = frames.find(f => 
-                    f.name() === 'mainFrame' || 
-                    f.name() === 'main' ||
-                    f.name() === 'content' ||
-                    (f.url() && f.url().includes('onu'))
-                );
-                if (mainFrame) break;
-                await new Promise(r => setTimeout(r, 1000));
+                allFrames = page.frames();
+                
+                // Metode 1: Exact name
+                mainFrame = allFrames.find(f => f.name() === 'mainFrame' || f.name() === 'main');
+                
+                // Metode 2: Partial name
+                if (!mainFrame) {
+                    mainFrame = allFrames.find(f => 
+                        f.name() && (f.name().toLowerCase().includes('main') || f.name().toLowerCase().includes('content'))
+                    );
+                }
+                
+                // Metode 3: URL pattern
+                if (!mainFrame) {
+                    mainFrame = allFrames.find(f => 
+                        f.url() && (f.url().includes('onu') || f.url().includes('data'))
+                    );
+                }
+                
+                // Metode 4: Frame terakhir (biasanya content)
+                if (!mainFrame && allFrames.length > 2) {
+                    mainFrame = allFrames[allFrames.length - 1];
+                }
+
+                if (mainFrame) {
+                    console.log(`   ✅ mainFrame ditemukan di attempt ${attempt}: "${mainFrame.name()}"`);
+                    break;
+                }
+                
+                console.log(`   ⏳ Retry mainFrame ${attempt}/15...`);
+                await new Promise(r => setTimeout(r, 2000));
             }
             
             if (!mainFrame) {
-                const allFrames = page.frames();
-                console.log(`   📋 Frames yang terdeteksi: ${allFrames.map(f => `"${f.name()}"`).join(', ')}`);
-                throw new Error('Gagal memuat main frame');
+                allFrames = page.frames();
+                const frameInfo = allFrames.map((f, i) => `      [${i}] name="${f.name()}" url="${f.url()}"`).join('\n');
+                throw new Error(`Gagal memuat main frame.\n   Detail frames:\n${frameInfo}`);
             }
-            console.log(`   ✅ mainFrame ditemukan: "${mainFrame.name()}"`);
 
             // Tunggu tabel dimuat
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
             try {
-                await mainFrame.waitForSelector('table tr', { timeout: 20000 });
+                await mainFrame.waitForSelector('table tr', { timeout: 25000 });
+                console.log(`   ✅ Tabel ditemukan`);
             } catch (err) {
-                console.log(`   ⚠️ Tabel tidak ditemukan, coba cari elemen lain...`);
+                console.log(`   ⚠️ Tabel tidak ditemukan: ${err.message}`);
+                // Coba screenshot untuk debugging
+                await mainFrame.screenshot({ path: 'debug_table.png' });
+                console.log(`   📸 Screenshot disimpan ke debug_table.png`);
             }
 
-            // Coba ubah limit tabel
+            // Ubah limit tabel
             try {
                 await mainFrame.evaluate(() => {
                     if (typeof setNumPerPage === 'function') setNumPerPage(300);
@@ -229,9 +289,9 @@ async function cekRedamanHioso(oltConfig, mac) {
                         }
                     }
                 });
-                await new Promise(r => setTimeout(r, 2000));
+                await new Promise(r => setTimeout(r, 3000));
             } catch (err) {
-                // Abaikan error
+                // Abaikan
             }
 
             // Cari MAC dan redaman
