@@ -1,4 +1,4 @@
-// oltService.js - FINAL CORRECT VERSION
+// oltService.js - FIXED: HAPUS page.authenticate + DOUBLE LOGIN WEB FORM
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -110,7 +110,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. Hioso (Puppeteer) - WEB FORM LOGIN
+// 3. Hioso (Puppeteer) - DOUBLE LOGIN WEB FORM
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     let searchMac = mac.substring(0, 16);
@@ -127,59 +127,86 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
-        page.setDefaultTimeout(45000);
-        page.setDefaultNavigationTimeout(45000);
+        page.setDefaultTimeout(35000);
+        page.setDefaultNavigationTimeout(35000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
+        // ❌ JANGAN GUNAKAN page.authenticate() - ini penyebab ERR_INVALID_AUTH_CREDENTIALS!
+        // OLT Hioso menggunakan Web Form Login, BUKAN HTTP Basic Auth.
+
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
-        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
         await new Promise(r => setTimeout(r, 2000));
 
         // ==========================================
-        // MODE A: DOUBLE LOGIN (8Pon & Cibarola)
+        // FASE LOGIN PERTAMA
+        // ==========================================
+        if (await page.$('#a')) {
+            console.log(`   🔑 Login pertama...`);
+            await page.type('#a', user);
+            await page.type('#b', pass);
+            await page.click('input[type="button"]');
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+            await new Promise(r => setTimeout(r, 2000));
+        }
+
+        // ==========================================
+        // FASE LOGIN KEDUA (DOUBLE LOGIN) - KHUSUS 8PON & CIBAROLA
+        // ==========================================
+        if (oltConfig.iframe) {
+            if (await page.$('#a')) {
+                console.log(`   🔑 Login kedua (Double Login)...`);
+                await page.evaluate(() => {
+                    document.querySelector('#a').value = '';
+                    document.querySelector('#b').value = '';
+                });
+                await page.type('#a', user);
+                await page.type('#b', pass);
+                await page.click('input[type="button"]');
+                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+                await new Promise(r => setTimeout(r, 3000));
+            } else {
+                console.log(`   ✅ Login pertama sukses (tidak perlu login kedua)`);
+            }
+        }
+
+        // ==========================================
+        // MODE A: IFRAME = true (8Pon & Cibarola) - DOUBLE LOGIN + IFRAME
         // ==========================================
         if (oltConfig.iframe) {
             console.log(`   Mode: Double Login + Iframe`);
             
-            // LOGIN PERTAMA
-            if (await page.$('#a')) {
-                console.log(`   🔑 Login pertama...`);
-                await page.type('#a', user);
-                await page.type('#b', pass);
-                await page.click('input[type="button"]');
-                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-                await new Promise(r => setTimeout(r, 2000));
-            }
-
-            // LOGIN KEDUA (DOUBLE LOGIN)
-            if (await page.$('#a')) {
-                console.log(`   🔑 Login kedua (Double Login)...`);
-                await page.type('#a', user);
-                await page.type('#b', pass);
-                await page.click('input[type="button"]');
-                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-                await new Promise(r => setTimeout(r, 3000));
-            }
-
             // Cari leftFrame
             let leftFrame = null;
             for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
-                leftFrame = frames.find(f => f.name() === 'leftFrame' || (f.url() && (f.url().includes('menu') || f.url().includes('left'))));
+                leftFrame = frames.find(f => 
+                    f.name() === 'leftFrame' || 
+                    (f.url() && (f.url().includes('menu') || f.url().includes('left')))
+                );
                 if (leftFrame) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
-            if (!leftFrame) throw new Error('Gagal memuat menu (leftFrame tidak ditemukan)');
+            
+            if (!leftFrame) {
+                const allFrames = page.frames();
+                console.log(`   📋 Frames: ${allFrames.map(f => `"${f.name()}"`).join(', ')}`);
+                throw new Error('Gagal memuat menu (leftFrame tidak ditemukan)');
+            }
+            console.log(`   ✅ leftFrame ditemukan`);
 
             // Klik All ONU
             await leftFrame.evaluate(() => {
                 const links = Array.from(document.querySelectorAll('a'));
-                const allOnuLink = links.find(link => link.innerText.trim() === 'All ONU' || link.innerText.trim().toLowerCase().includes('all onu'));
+                const allOnuLink = links.find(link => 
+                    link.innerText.trim() === 'All ONU' || 
+                    link.innerText.trim().toLowerCase().includes('all onu')
+                );
                 if (allOnuLink) allOnuLink.click();
-            }).catch(() => console.log('   ⚠️ Gagal klik All ONU...'));
+            }).catch(() => console.log('   ⚠️ Gagal klik All ONU'));
             
             await new Promise(r => setTimeout(r, 4000));
 
@@ -187,11 +214,16 @@ async function cekRedamanHioso(oltConfig, mac) {
             let mainFrame = null;
             for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
-                mainFrame = frames.find(f => f.name() === 'mainFrame' || (f.url() && f.url().includes('onu')));
+                mainFrame = frames.find(f => 
+                    f.name() === 'mainFrame' || 
+                    (f.url() && f.url().includes('onu'))
+                );
                 if (mainFrame) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
+            
             if (!mainFrame) throw new Error('Gagal memuat tabel (mainFrame tidak ditemukan)');
+            console.log(`   ✅ mainFrame ditemukan`);
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
             await mainFrame.waitForSelector('table tr', { timeout: 30000 });
@@ -206,6 +238,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             const rxPowerResult = await mainFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:.-]/g, '').toLowerCase();
                 const rows = Array.from(document.querySelectorAll('table tr'));
+                
                 for (let row of rows) {
                     const cleanRowText = row.innerText.replace(/[:.-]/g, '').toLowerCase();
                     if (cleanRowText.includes(cleanTarget)) {
@@ -220,26 +253,20 @@ async function cekRedamanHioso(oltConfig, mac) {
 
             if (rxPowerResult) {
                 console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
-                return { olt_name: oltConfig.label, mac_onu: searchMac, redaman: `${rxPowerResult} dBm`, status: 'Online' };
+                return { 
+                    olt_name: oltConfig.label, 
+                    mac_onu: searchMac, 
+                    redaman: `${rxPowerResult} dBm`, 
+                    status: 'Online' 
+                };
             }
 
         // ==========================================
-        // MODE B: SINGLE LOGIN (4Pon & Perum)
+        // MODE B: IFRAME = false (4Pon & Perum) - SINGLE LOGIN + DIRECT URL
         // ==========================================
         } else {
             console.log(`   Mode: Single Login + Direct URL`);
             
-            // LOGIN SATU KALI
-            if (await page.$('#a')) {
-                console.log(`   🔑 Login...`);
-                await page.type('#a', user);
-                await page.type('#b', pass);
-                await page.click('input[type="button"]');
-                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-                await new Promise(r => setTimeout(r, 3000));
-            }
-
-            // Akses halaman ONU
             await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 30000 });
             await new Promise(r => setTimeout(r, 3000));
             
@@ -247,6 +274,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             const frames = page.frames();
             if (frames.length > 1) {
                 targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
+                console.log(`   ✅ Frame ditemukan: ${frames.length} frames`);
             }
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
@@ -255,6 +283,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             const rxPowerResult = await targetFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
                 const rows = Array.from(document.querySelectorAll('table tr'));
+                
                 for (let row of rows) {
                     const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
                     if (rowText.includes(cleanTarget)) {
@@ -269,7 +298,12 @@ async function cekRedamanHioso(oltConfig, mac) {
 
             if (rxPowerResult) {
                 console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
-                return { olt_name: oltConfig.label, mac_onu: searchMac, redaman: `${rxPowerResult} dBm`, status: 'Online' };
+                return { 
+                    olt_name: oltConfig.label, 
+                    mac_onu: searchMac, 
+                    redaman: `${rxPowerResult} dBm`, 
+                    status: 'Online' 
+                };
             }
         }
 
