@@ -101,7 +101,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. Hioso (Puppeteer)
+// 3. Hioso (Puppeteer) - FIXED WITH AUTO-RETRY
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     let searchMac = mac.substring(0, 16);
@@ -109,6 +109,7 @@ async function cekRedamanHioso(oltConfig, mac) {
         searchMac = mac.substring(0, 15);
     }
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Puppeteer)...`);
+    console.log(`   MAC dicari: ${searchMac} (Panjang: ${searchMac.length})`);
 
     const browser = await puppeteer.launch({
         headless: 'new',
@@ -124,65 +125,145 @@ async function cekRedamanHioso(oltConfig, mac) {
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
+        console.log(`   ⏳ Mengakses halaman utama OLT...`);
+        
+        // ✅ SEMUA HIOSO MENGGUNAKAN HTTP Basic Auth
         await page.authenticate({ username: user, password: pass });
         await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        console.log(`   ✅ HTTP Basic Auth sukses`);
+        
         await new Promise(r => setTimeout(r, 3000));
 
+        // ==========================================
+        // MODE 1: IFRAME = true (Cibarola & 8Pon)
+        // ==========================================
         if (oltConfig.iframe) {
+            console.log(`   Mode: HTTP Basic Auth + Iframe`);
+            
             let leftFrame = null;
             for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
-                leftFrame = frames.find(f => f.name() === 'leftFrame' || (f.url() && (f.url().includes('menu') || f.url().includes('left'))));
+                leftFrame = frames.find(f => 
+                    f.name() === 'leftFrame' || 
+                    f.name() === 'menuFrame' ||
+                    (f.url() && (f.url().includes('menu') || f.url().includes('left')))
+                );
                 if (leftFrame) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
-            if (!leftFrame) return { error: 'Gagal memuat menu (leftFrame tidak ditemukan)' };
+            
+            if (!leftFrame) {
+                throw new Error('Gagal memuat menu frame');
+            }
 
-            await leftFrame.evaluate(() => {
-                const links = Array.from(document.querySelectorAll('a'));
-                const allOnuLink = links.find(link => link.innerText.trim() === 'All ONU' || link.innerText.trim().toLowerCase().includes('all onu'));
-                if (allOnuLink) allOnuLink.click();
-            }).catch(() => {});
+            try {
+                await leftFrame.waitForSelector('a', { timeout: 10000 });
+                await leftFrame.evaluate(() => {
+                    const links = Array.from(document.querySelectorAll('a'));
+                    const allOnuLink = links.find(link => 
+                        link.innerText.trim() === 'All ONU' || 
+                        link.innerText.trim().toLowerCase().includes('all onu')
+                    );
+                    if (allOnuLink) allOnuLink.click();
+                });
+            } catch (err) {
+                console.log(`   ️ Gagal klik All ONU: ${err.message}`);
+            }
             
             await new Promise(r => setTimeout(r, 4000));
 
             let mainFrame = null;
             for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
-                mainFrame = frames.find(f => f.name() === 'mainFrame' || (f.url() && f.url().includes('onu')));
+                mainFrame = frames.find(f => 
+                    f.name() === 'mainFrame' || 
+                    f.name() === 'main' ||
+                    f.name() === 'content' ||
+                    (f.url() && f.url().includes('onu'))
+                );
                 if (mainFrame) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
-            if (!mainFrame) return { error: 'Gagal memuat tabel (mainFrame tidak ditemukan)' };
-
-            await mainFrame.waitForSelector('table tr', { timeout: 20000 });
-
-            await mainFrame.evaluate(() => {
-                if (typeof setNumPerPage === 'function') setNumPerPage(300);
-                else if (typeof OnPageSizeChange === 'function') OnPageSizeChange(300);
-            }).catch(() => {});
             
-            await new Promise(r => setTimeout(r, 3000));
+            if (!mainFrame) {
+                throw new Error('Gagal memuat main frame');
+            }
 
-            const rxPowerResult = await mainFrame.evaluate((macToFind) => {
-                const cleanTarget = macToFind.replace(/[:.-]/g, '').toLowerCase();
-                const rows = Array.from(document.querySelectorAll('table tr'));
-                for (let row of rows) {
-                    const cleanRowText = row.innerText.replace(/[:.-]/g, '').toLowerCase();
-                    if (cleanRowText.includes(cleanTarget)) {
-                        const rowTextClean = row.innerText.replace(/\s+/g, ' ').trim();
-                        const rxPattern = /-\d+\.\d+/;
-                        const match = rowTextClean.match(rxPattern);
-                        return match ? match[0] : null;
+            console.log(`   ⏳ Menunggu data tabel dimuat...`);
+            try {
+                await mainFrame.waitForSelector('table tr', { timeout: 20000 });
+            } catch (err) {
+                console.log(`   ⚠️ Tabel tidak ditemukan...`);
+            }
+
+            // Coba ubah limit tabel
+            try {
+                await mainFrame.evaluate(() => {
+                    if (typeof setNumPerPage === 'function') setNumPerPage(300);
+                    else if (typeof OnPageSizeChange === 'function') OnPageSizeChange(300);
+                });
+                await new Promise(r => setTimeout(r, 3000));
+            } catch (err) {
+                // Abaikan
+            }
+
+            //  FITUR BARU: AUTO-RETRY PENCARIAN MAC
+            console.log(`    Mulai pencarian MAC (dengan Auto-Retry)...`);
+            let rxPowerResult = null;
+            
+            for (let retry = 1; retry <= 3; retry++) {
+                rxPowerResult = await mainFrame.evaluate((macToFind) => {
+                    const cleanTarget = macToFind.replace(/[:.-]/g, '').toLowerCase();
+                    const rows = Array.from(document.querySelectorAll('table tr'));
+                    
+                    for (let row of rows) {
+                        const cleanRowText = row.innerText.replace(/[:.-]/g, '').toLowerCase();
+                        if (cleanRowText.includes(cleanTarget)) {
+                            const rowTextClean = row.innerText.replace(/\s+/g, ' ').trim();
+                            const rxPattern = /-\d+\.\d+/;
+                            const match = rowTextClean.match(rxPattern);
+                            return match ? match[0] : null;
+                        }
                     }
+                    return null;
+                }, searchMac);
+
+                if (rxPowerResult) {
+                    console.log(`   ✅ Ditemukan pada percobaan ke-${retry}! Redaman: ${rxPowerResult} dBm`);
+                    break; // Keluar dari loop jika ketemu
+                } else {
+                    console.log(`   ⏳ Data tabel belum lengkap, menunggu 3 detik dan coba lagi (${retry}/3)...`);
+                    await new Promise(r => setTimeout(r, 3000));
                 }
-                return null;
-            }, searchMac);
+            }
 
             if (rxPowerResult) {
-                return { olt_name: oltConfig.label, mac_onu: searchMac, redaman: `${rxPowerResult} dBm`, status: 'Online' };
+                return { 
+                    olt_name: oltConfig.label, 
+                    mac_onu: searchMac, 
+                    redaman: `${rxPowerResult} dBm`, 
+                    status: 'Online' 
+                };
             }
+
+        // ==========================================
+        // MODE 2: IFRAME = false (Perum & 4Pon)
+        // ==========================================
         } else {
+            console.log(`   Mode: HTTP Basic Auth + Direct URL`);
+            
+            await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await new Promise(r => setTimeout(r, 3000));
+
+            if (await page.$('#a')) {
+                console.log(`   🔑 Mengisi form login web...`);
+                await page.type('#a', user);
+                await page.type('#b', pass);
+                await page.click('input[type="button"]');
+                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+                await new Promise(r => setTimeout(r, 3000));
+            }
+
             await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 30000 });
             await new Promise(r => setTimeout(r, 3000));
             
@@ -192,66 +273,61 @@ async function cekRedamanHioso(oltConfig, mac) {
                 targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
             }
 
-            await targetFrame.waitForSelector('table tr', { timeout: 20000 });
+            console.log(`   ⏳ Menunggu data tabel dimuat...`);
+            try {
+                await targetFrame.waitForSelector('table tr', { timeout: 20000 });
+            } catch (err) {
+                console.log(`   ️ Tabel tidak ditemukan...`);
+            }
 
-            const rxPowerResult = await targetFrame.evaluate((macToFind) => {
-                const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
-                const rows = Array.from(document.querySelectorAll('table tr'));
-                for (let row of rows) {
-                    const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
-                    if (rowText.includes(cleanTarget)) {
-                        const cleanRowText = row.innerText.replace(/\s+/g, ' ').trim();
-                        const rxPattern = /\s(-\d+\.\d+)\s/;
-                        const match = cleanRowText.match(rxPattern);
-                        if (match) return match[1];
+            // 🚀 FITUR BARU: AUTO-RETRY PENCARIAN MAC (Untuk Single Login juga)
+            let rxPowerResult = null;
+            for (let retry = 1; retry <= 3; retry++) {
+                rxPowerResult = await targetFrame.evaluate((macToFind) => {
+                    const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
+                    const rows = Array.from(document.querySelectorAll('table tr'));
+                    
+                    for (let row of rows) {
+                        const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
+                        if (rowText.includes(cleanTarget)) {
+                            const cleanRowText = row.innerText.replace(/\s+/g, ' ').trim();
+                            const rxPattern = /\s(-\d+\.\d+)\s/;
+                            const match = cleanRowText.match(rxPattern);
+                            if (match) return match[1];
+                        }
                     }
+                    return null;
+                }, searchMac);
+
+                if (rxPowerResult) {
+                    console.log(`   ✅ Ditemukan pada percobaan ke-${retry}! Redaman: ${rxPowerResult} dBm`);
+                    break;
+                } else {
+                    console.log(`   ⏳ Data tabel belum lengkap, menunggu 3 detik dan coba lagi (${retry}/3)...`);
+                    await new Promise(r => setTimeout(r, 3000));
                 }
-                return null;
-            }, searchMac);
+            }
 
             if (rxPowerResult) {
-                return { olt_name: oltConfig.label, mac_onu: searchMac, redaman: `${rxPowerResult} dBm`, status: 'Online' };
+                return { 
+                    olt_name: oltConfig.label, 
+                    mac_onu: searchMac, 
+                    redaman: `${rxPowerResult} dBm`, 
+                    status: 'Online' 
+                };
             }
         }
+
+        console.log(`   ❌ Tidak ditemukan di tabel setelah 3x percobaan`);
         return null;
+
     } catch (error) {
+        console.error(`   ❌ Error: ${error.message}`);
         return { error: error.message };
     } finally {
         await browser.close();
     }
 }
-
-// ==========================================
-// 4. SCAN SEMUA OLT (DENGAN CALLBACK STREAMING)
-// ==========================================
-async function scanSemuaOlt(oltList, mac, onFoundCallback) {
-    console.log(`\n========================================`);
-    console.log(`🚀 MULAI SCAN ${oltList.length} OLT...`);
-    console.log(`========================================`);
-    
-    const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
-    const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
-
-    // 1. Scan HSAirpo (Cepat & Paralel)
-    if (axiosOlts.length > 0) {
-        const axiosPromises = axiosOlts.map(async (olt) => {
-            let hasil = null;
-            if (olt.method === 'cibarola') {
-                hasil = await cekRedamanHSAirpoCibarola(olt, mac);
-            } else {
-                hasil = await cekRedamanHSAirpoAPI(olt, mac);
-            }
-            
-            // 🚀 LANGSUNG KIRIM KE WA JIKA SUKSES
-            if (hasil && !hasil.error && onFoundCallback) {
-                const text = `✅ *${hasil.olt_name}*\n📉 Redaman: *${hasil.redaman}*\n📡 Status: ${hasil.status}`;
-                await onFoundCallback(text);
-            }
-            return { olt, hasil };
-        });
-        await Promise.all(axiosPromises);
-    }
-
     // 2. Scan Hioso (Lambat & Berurutan)
     if (puppeteerOlts.length > 0) {
         for (const olt of puppeteerOlts) {
