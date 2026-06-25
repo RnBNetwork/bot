@@ -99,13 +99,12 @@ module.exports = {
             },
             olts: [
                 {
-                    type: 'Hioso',
-                    label: 'Hioso 8Pon Sukamelang',
+                    type: 'HSAirpo',
+                    label: 'HSAirpo Sukamelang',
                     ip: '103.191.165.126',
-                    port: 680,
-                    user: 'admin',
-                    pass: 'admin',
-                    iframe: true // Double Login + Iframe
+                    port: 9900,
+                    user: 'root',
+                    pass: 'admin'
                 },
                 {
                     type: 'Hioso',
@@ -117,12 +116,13 @@ module.exports = {
                     iframe: false // Single Login
                 },
                 {
-                    type: 'HSAirpo',
-                    label: 'HSAirpo Sukamelang',
+                    type: 'Hioso',
+                    label: 'Hioso 8Pon Sukamelang',
                     ip: '103.191.165.126',
-                    port: 9900,
-                    user: 'root',
-                    pass: 'admin'
+                    port: 680,
+                    user: 'admin',
+                    pass: 'admin',
+                    iframe: true // Double Login + Iframe
                 }
             ]
         }
