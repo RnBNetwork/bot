@@ -1,4 +1,4 @@
-// oltService.js - CLEAN VERSION (NO DUPLICATE FINAL REPORT)
+// oltService.js - NO ERROR / TIMEOUT OUTPUT LOGS
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -118,8 +118,7 @@ async function cekRedamanHioso(oltConfig, mac) {
         searchMac = mac.substring(0, 15);
     }
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Puppeteer)...`);
-    console.log(`   MAC dicari: ${searchMac}`);
-
+    
     const browser = await puppeteer.launch({
         headless: 'new',
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
@@ -127,8 +126,8 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
-        page.setDefaultTimeout(15000);
-        page.setDefaultNavigationTimeout(15000);
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(30000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
@@ -139,19 +138,17 @@ async function cekRedamanHioso(oltConfig, mac) {
         
         await new Promise(r => setTimeout(r, 3000));
 
-        // MODE 1: IFRAME = true
         if (oltConfig.iframe) {
             let leftFrame = null;
-            for (let attempt = 1; attempt <= 5; attempt++) {
+            for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
                 leftFrame = frames.find(f => f.name() === 'leftFrame' || f.name() === 'menuFrame' || (f.url() && f.url().includes('menu')));
                 if (leftFrame) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
-            
             if (!leftFrame) throw new Error('Gagal memuat menu frame');
 
-            await leftFrame.waitForSelector('a', { timeout: 5000 });
+            await leftFrame.waitForSelector('a', { timeout: 10000 });
             await leftFrame.evaluate(() => {
                 const links = Array.from(document.querySelectorAll('a'));
                 const allOnuLink = links.find(link => link.innerText.trim() === 'All ONU' || link.innerText.trim().toLowerCase().includes('all onu'));
@@ -161,23 +158,22 @@ async function cekRedamanHioso(oltConfig, mac) {
             await new Promise(r => setTimeout(r, 3000));
 
             let mainFrame = null;
-            for (let attempt = 1; attempt <= 5; attempt++) {
+            for (let attempt = 1; attempt <= 15; attempt++) {
                 const frames = page.frames();
                 mainFrame = frames.find(f => f.name() === 'mainFrame' || f.name() === 'main' || (f.url() && f.url().includes('onu')));
                 if (mainFrame) break;
                 await new Promise(r => setTimeout(r, 1000));
             }
-            
             if (!mainFrame) throw new Error('Gagal memuat main frame');
 
-            try { await mainFrame.waitForSelector('table tr', { timeout: 5000 }); } catch (err) {}
+            try { await mainFrame.waitForSelector('table tr', { timeout: 20000 }); } catch (err) {}
 
             try {
                 await mainFrame.evaluate(() => {
                     if (typeof setNumPerPage === 'function') setNumPerPage(300);
                     else if (typeof OnPageSizeChange === 'function') OnPageSizeChange(300);
                 });
-                await new Promise(r => setTimeout(r, 1500));
+                await new Promise(r => setTimeout(r, 2000));
             } catch (err) {}
 
             const rxPowerResult = await mainFrame.evaluate((macToFind) => {
@@ -199,7 +195,6 @@ async function cekRedamanHioso(oltConfig, mac) {
                 return { olt_name: oltConfig.label, mac_onu: searchMac, redaman: `${rxPowerResult} dBm`, status: 'Online' };
             }
 
-        // MODE 2: IFRAME = false
         } else {
             if (await page.$('#a')) {
                 await page.type('#a', user);
@@ -208,7 +203,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await new Promise(r => setTimeout(r, 2000));
             }
 
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 30000 });
             await new Promise(r => setTimeout(r, 3000));
             
             let targetFrame = page;
@@ -217,7 +212,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                 targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
             }
 
-            try { await targetFrame.waitForSelector('table tr', { timeout: 5000 }); } catch (err) {}
+            try { await targetFrame.waitForSelector('table tr', { timeout: 20000 }); } catch (err) {}
 
             const rxPowerResult = await targetFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
@@ -250,20 +245,17 @@ async function cekRedamanHioso(oltConfig, mac) {
     }
 }
 
-// ==================================================
-// 4. SCAN SEMUA OLT (ANTI LOG DUPLIKAT REAL-TIME)
-// ==================================================
-async function scanSemuaOlt(oltList, mac, msg = null) {
+// ==========================================
+// 4. SCAN SEMUA OLT (CLEAN TANPA LOG TIMEOUT)
+// ==========================================
+async function scanSemuaOlt(oltList, mac) {
     console.log(`\n========================================`);
     console.log(`🚀 MULAI SCAN ${oltList.length} OLT...`);
     console.log(`========================================`);
-    
     const hasilAkhir = [];
-    let foundCount = 0;
     const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
     const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
 
-    // --- SCAN HS AIRPO ---
     if (axiosOlts.length > 0) {
         console.log(`\n⚡ Menjalankan ${axiosOlts.length} HSAirpo secara paralel...`);
         const axiosPromises = axiosOlts.map(async (olt) => {
@@ -273,53 +265,28 @@ async function scanSemuaOlt(oltList, mac, msg = null) {
             } else {
                 hasil = await cekRedamanHSAirpoAPI(olt, mac);
             }
-
-            if (hasil && !hasil.error) {
-                foundCount++;
-                if (msg) {
-                    // Langsung balas secara Real-time saat itu juga
-                    await msg.reply(
-                        `📌 *OLT DITEMUKAN (Real-time)*\n\n` +
-                        `🖥️ *OLT:* ${hasil.olt_name}\n` +
-                        `📉 *Redaman:* *${hasil.redaman}*\n` +
-                        `📡 *Status:* ${hasil.status}`
-                    ).catch(() => {});
-                    // Sesuai permintaan Anda: Jangan masukkan ke array hasil akhir jika sudah terkirim real-time
-                } else {
-                    hasilAkhir.push(`\n✅ *${hasil.olt_name}*\n   📉 Redaman: *${hasil.redaman}*\n   📡 Status: ${hasil.status}`);
-                }
-            } else if (hasil && hasil.error) {
-                // Info OLT error/timeout tetap dimasukkan ke laporan akhir biar teknisi tahu ada OLT mati
-                hasilAkhir.push(`⚠️ *${olt.label}*: ${hasil.error}`);
-            }
+            return { olt, hasil };
         });
-        await Promise.all(axiosPromises);
+
+        const axiosResults = await Promise.all(axiosPromises);
+        axiosResults.forEach(({ olt, hasil }) => {
+            if (hasil && !hasil.error) {
+                // Hanya simpan data jika OLT sukses ditemukan (Sesuai permintaan)
+                hasilAkhir.push(`🖥️ *OLT:* ${hasil.olt_name}\n📉 *Redaman:* *${hasil.redaman}*\n📡 *Status:* ${hasil.status}`);
+            }
+            // Bagian error / timeout diabaikan total agar tidak mengotori isi pesan WhatsApp
+        });
     }
 
-    // --- SCAN HIOSO ---
     if (puppeteerOlts.length > 0) {
         console.log(`\n🐢 Menjalankan ${puppeteerOlts.length} Hioso secara berurutan...`);
         for (const olt of puppeteerOlts) {
             const hasil = await cekRedamanHioso(olt, mac);
-
             if (hasil && !hasil.error) {
-                foundCount++;
-                if (msg) {
-                    // Langsung balas secara Real-time saat itu juga
-                    await msg.reply(
-                        `📌 *OLT DITEMUKAN (Real-time)*\n\n` +
-                        `🖥️ *OLT:* ${hasil.olt_name}\n` +
-                        `📉 *Redaman:* *${hasil.redaman}*\n` +
-                        `📡 *Status:* ${hasil.status}`
-                    ).catch(() => {});
-                    // Sesuai permintaan Anda: Jangan masukkan ke array hasil akhir jika sudah terkirim real-time
-                } else {
-                    hasilAkhir.push(`\n✅ *${hasil.olt_name}*\n   📉 Redaman: *${hasil.redaman}*\n   📡 Status: ${hasil.status}`);
-                }
-            } else if (hasil && hasil.error) {
-                // Info OLT error/timeout tetap dimasukkan ke laporan akhir biar teknisi tahu ada OLT mati
-                hasilAkhir.push(`⚠️ *${olt.label}*: ${hasil.error}`);
+                // Hanya simpan data jika OLT sukses ditemukan
+                hasilAkhir.push(`🖥️ *OLT:* ${hasil.olt_name}\n📉 *Redaman:* *${hasil.redaman}*\n📡 *Status:* ${hasil.status}`);
             }
+            // Bagian error / timeout diabaikan total agar tidak mengotori isi pesan WhatsApp
         }
     }
 
@@ -327,22 +294,10 @@ async function scanSemuaOlt(oltList, mac, msg = null) {
     console.log(`✅ SCAN SELESAI!`);
     console.log(`========================================\n`);
 
-    // JIKA TIDAK KETEMU DI MANAPUN
-    if (foundCount === 0 && hasilAkhir.length === 0) {
+    if (hasilAkhir.length === 0) {
         return '⚠️ ONU tidak ditemukan di OLT manapun pada cabang ini.';
     }
-    
-    // JIKA KETEMU SECARA REALTIME
-    if (foundCount > 0) {
-        if (hasilAkhir.length === 0) {
-            return '🏁 Semua OLT selesai diperiksa.';
-        } else {
-            // Jika ada OLT lain yang error (seperti timeout), tampilkan log error-nya saja di bawah ini
-            return hasilAkhir.join('\n') + '\n\n🏁 Semua OLT selesai diperiksa.';
-        }
-    }
-
-    return hasilAkhir.join('\n');
+    return hasilAkhir.join('\n\n');
 }
 
 module.exports = { scanSemuaOlt };
