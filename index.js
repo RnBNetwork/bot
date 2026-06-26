@@ -195,25 +195,16 @@ async function handleCekRedaman(msg, serverKey, username) {
         // Hapus update edit status agar chat mengalir natural tanpa tabrakan sesi
         console.log(`🔍 MAC Ditemukan: ${mac}. Memulai scan OLT...`);
 
-        const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
+        // Panggil fungsi dengan membawa parameter msg, userObj, dan targetServer
+        const isFound = await scanSemuaOlt(targetServer.olts, mac, msg, userObj, targetServer);
         
-        if (!hasilOlt || hasilOlt.startsWith('⚠️')) {
-            // KIRIM SEBAGAI PESAN REPLY BARU (ADA NOTIF HP)
+        if (!isFound) {
             await msg.reply(
                 `⚠️ *ONU Tidak Ditemukan*\n\n` +
                 `👤 *Pelanggan:* ${userObj.name}\n` +
                 `💻 *Server:* ${targetServer.label}\n` +
                 `🔒 *MAC:* \`${mac}\`\n\n` +
                 `Status: Tidak terdaftar di OLT manapun pada cabang ini.`
-            );
-        } else {
-            // KIRIM SEBAGAI PESAN REPLY BARU (ADA NOTIF HP)
-            await msg.reply(
-                `📌 *HASIL CEK REDAMAN OLT*\n\n` +
-                `👤 *Pelanggan:* ${userObj.name}\n` +
-                `💻 *Server:* ${targetServer.label}\n` +
-                `🔒 *MAC:* \`${mac}\`\n\n` +
-                `${hasilOlt}`
             );
         }
     } catch (err) {
@@ -268,25 +259,22 @@ async function handleAktivasi(msg, serverKey, username) {
 
     if (mac) {
         try {
-            const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
+            // Jalankan scan OLT real-time
+            const isFound = await scanSemuaOlt(targetServer.olts, mac, msg, userObj, targetServer);
             
-            let finalReport = 
-                `✨ *RnB Network - Aktivasi Berhasil*\n\n` +
-                `👤 *Pelanggan:* ${userObj.name}\n` +
-                `🛜 *Paket:* ${paket}\n` +
-                `💻 *Server:* ${targetServer.label}\n` +
-                `🌐 *IP:* ${ip}\n` +
-                `🔒 *MAC:* \`${mac}\`\n\n`;
-
-            if (!hasilOlt || hasilOlt.startsWith('⚠️')) {
-                finalReport += `⚠️ _ONU tidak terdeteksi di OLT cabang ini._`;
-            } else {
-                finalReport += `📌 *Detail Redaman OLT:*\n${hasilOlt}`;
+            if (!isFound) {
+                await msg.reply(
+                    `✨ *RnB Network - Aktivasi Berhasil*\n\n` +
+                    `👤 *Pelanggan:* ${userObj.name}\n` +
+                    `🛜 *Paket:* ${paket}\n` +
+                    `💻 *Server:* ${targetServer.label}\n` +
+                    `🌐 *IP:* ${ip}\n` +
+                    `🔒 *MAC:* \`${mac}\`\n\n` +
+                    `⚠️ _ONU tidak terdeteksi di OLT cabang ini._`
+                );
             }
-            
-            await msg.reply(finalReport); // Balas pesan baru murni
         } catch (err) {
-            await msg.reply(`✨ *Isolir Terbuka!* Namun gagal membaca data OLT.`);
+            await msg.reply(`✨ *Isolir Terbuka!* Namun gagal membaca data OLT.`));
         }
     } else {
         await msg.reply(
