@@ -28,7 +28,7 @@ const client = new Client({
     }
 });
 
-// SYSTEM ANTRIAN PERINTAH (Command Queue)
+// SYSTEM ANTRIAN PERINTAH (Command Queue - Mencegah Bentrok Banyak HP)
 let commandQueue = Promise.resolve();
 
 // ==========================================
@@ -43,7 +43,7 @@ client.on('authenticated', () => console.log('✅ AUTH SUCCESS'));
 client.on('ready', () => {
     console.log('================================');
     console.log('🚀 BOT READY FOR RnBNET!');
-    console.log('🔒 ANTRIAN AKTIF: Aman dari Bentrok Banyak HP');
+    console.log('🔒 ANTRIAN AKTIF: Berjalan Bergantian Otomatis');
     console.log('================================');
 });
 client.on('disconnected', (reason) => {
@@ -102,7 +102,7 @@ async function safeCloseMikrotik(api) {
 }
 
 // ==========================================
-// 5. MESSAGE HANDLER & QUEUE INJECTION
+// 5. MESSAGE HANDLER & QUEUE SYSTEM
 // ==========================================
 client.on('message_create', async (msg) => {
     try {
@@ -111,16 +111,6 @@ client.on('message_create', async (msg) => {
         const command = args[0]?.toLowerCase();
 
         if (command === 'ping') { await msg.reply('pong 🏓'); return; }
-        
-        if (command === '!menu') {
-            await msg.reply(
-                `📡 *RnBNET BOT HIGH SPEED*\n\n` +
-                `🔍 *CEK REDAMAN:*\n\`!cek [mikrotik] [username]\`\n` +
-                `⚡ *AKTIVASI:*\n\`!aktifkan [mikrotik] [username]\`\n\n` +
-                `📍 *SERVER:* panglejar, perum, cibarola, sukamelang`
-            );
-            return;
-        }
 
         if (['!cek', '!aktifkan'].includes(command)) {
             if (args.length < 3) {
@@ -131,11 +121,9 @@ client.on('message_create', async (msg) => {
             const serverKey = args[1].toLowerCase();
             const username = args[2];
 
-            if (!config.servers[serverKey]) {
-                return;
-            }
+            if (!config.servers[serverKey]) return;
 
-            // MASUKKAN KE DALAM ANTRIAN (Agar HP 1 & HP 2 tidak bentrok browser)
+            // Memasukkan perintah ke antrian serial (HP 1 selesai, baru HP 2 jalan)
             commandQueue = commandQueue.then(async () => {
                 try {
                     if (command === '!cek') {
@@ -144,7 +132,7 @@ client.on('message_create', async (msg) => {
                         await handleAktivasi(msg, serverKey, username);
                     }
                 } catch (queueErr) {
-                    console.error('Error saat mengeksekusi antrian:', queueErr);
+                    console.error('Error eksekusi antrian:', queueErr);
                 }
             });
         }
@@ -155,11 +143,11 @@ client.on('message_create', async (msg) => {
 });
 
 // ==========================================
-// 6. HANDLER CEK REDAMAN (INSTANT REPLY + FAST SCAN)
+// 6. HANDLER CEK REDAMAN (INSTANT REPLY)
 // ==========================================
 async function handleCekRedaman(msg, serverKey, username) {
     let api;
-    // Balas Dulu Biar Kelihatan Bot Merespons Mengambil MAC MikroTik
+    // Beri respons awal langsung agar user tahu bot sedang bekerja membaca MikroTik
     const statusMsg = await msg.reply(`⏳ *[RnBNET]* Menghubungi MikroTik untuk mengambil data MAC user *${username}...*`);
     
     try {
@@ -179,19 +167,19 @@ async function handleCekRedaman(msg, serverKey, username) {
 
         const mac = rawMac.trim().toLowerCase();
         
-        // Update status pesan memberi tahu teknisi bahwa MAC ditemukan dan mulai menyisir OLT
+        // Update pesan yang sama, beri info MAC berhasil diambil dan mulai scan OLT
         await statusMsg.edit(`🔍 *MAC Ditemukan:* \`${mac}\`\n⚡ Memulai penyisiran OLT cabang *${targetServer.label}...*`);
 
         const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
         
-        // Edit pesan awal tadi menjadi 1 hasil akhir yang bersih utuh
+        // Ubah pesan awal menjadi hasil laporan akhir tanpa mengirim pesan baru
         if (!hasilOlt || hasilOlt.startsWith('⚠️')) {
             await statusMsg.edit(
                 `⚠️ *ONU Tidak Ditemukan*\n\n` +
                 `👤 *Pelanggan:* ${username}\n` +
                 `💻 *Server:* ${targetServer.label}\n` +
                 `🔒 *MAC:* \`${mac}\`\n\n` +
-                `Status: Tidak terdaftar di OLT manapun.`
+                `Status: Tidak terdaftar di OLT manapun pada cabang ini.`
             );
         } else {
             await statusMsg.edit(
