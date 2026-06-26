@@ -274,7 +274,7 @@ async function handleAktivasi(msg, serverKey, username) {
                 );
             }
         } catch (err) {
-            await msg.reply(`✨ *Isolir Terbuka!* Namun gagal membaca data OLT.`));
+            await msg.reply(`✨ *Isolir Terbuka!* Namun gagal membaca data OLT.`);
         }
     } else {
         await msg.reply(
