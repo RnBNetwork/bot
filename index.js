@@ -53,7 +53,7 @@ client.on('disconnected', (reason) => {
 });
 
 // ==========================================
-// 4. HELPER MIKROTIK (PERBAIKAN TIMEOUT & OPTIMASI BEBAN)
+// 4. HELPER MIKROTIK
 // ==========================================
 function withTimeout(promise, ms, errMsg) {
     let timeoutId;
@@ -74,7 +74,7 @@ async function connectMikrotik(serverKey) {
         port: targetServer.mikrotik.port,
         user: targetServer.mikrotik.user,
         password: targetServer.mikrotik.pass,
-        timeout: 30 // Dinaikkan menjadi 30 detik agar koneksi lebih sabar menunggu MikroTik rileks
+        timeout: 30
     });
 
     try {
@@ -86,17 +86,13 @@ async function connectMikrotik(serverKey) {
 }
 
 async function getUserFromMikrotik(api, username) {
-    // Memberikan toleransi waktu tunggu cetak database hingga 35 detik jika CPU router sedang sibuk
     const secrets = await withTimeout(api.write('/ppp/secret/print'), 35000, 'Timeout Query Secret MikroTik.');
     const targetName = username.trim().toLowerCase();
     
-    // Pencarian Utama: Harus sama persis
     const userObj = secrets.find(x => x.name && x.name.trim().toLowerCase() === targetName);
-    
     if (!userObj) {
-        // Pencarian Cadangan: Jika ada spasi tertinggal di MikroTik, cari yang mengandung kata tersebut
         const looserObj = secrets.find(x => x.name && x.name.trim().toLowerCase().includes(targetName));
-        if (!looserObj) throw new Error(`User "${username}" benar-benar tidak ditemukan di MikroTik`);
+        if (!looserObj) throw new Error(`User "${username}" tidak ditemukan di MikroTik`);
         return looserObj;
     }
     return userObj;
@@ -202,7 +198,6 @@ async function handleCekRedaman(msg, serverKey, username) {
 
     try {
         console.log(`🔍 MAC Ditemukan: ${mac}. Memulai scan OLT...`);
-
         const isFound = await scanSemuaOlt(targetServer.olts, mac, msg, userObj, targetServer);
         
         if (!isFound) {
