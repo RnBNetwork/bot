@@ -99,7 +99,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. HIOSO PUPPETEER (FIXED FOR OLT PERUM)
+// 3. HIOSO PUPPETEER (FIXED TEMPERATURE VS RX-POWER)
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
@@ -154,6 +154,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                     const rows = Array.from(document.querySelectorAll('table tr'));
                     for (let row of rows) {
                         if (row.innerText.replace(/[:.-]/g, '').toLowerCase().includes(target)) {
+                            // Mencari angka desimal yang wajib diawali tanda minus (-)
                             const match = row.innerText.replace(/\s+/g, ' ').match(/-\d+\.\d+/);
                             return match ? match[0] : null;
                         }
@@ -182,23 +183,25 @@ async function cekRedamanHioso(oltConfig, mac) {
             const frames = page.frames();
             if (frames.length > 1) targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
 
-            // 🚀 PERBAIKAN UTAMA: Regex pembacaan baris tabel dibuat kebal spasi dan kebal LOS/Mati
             const rxPowerResult = await targetFrame.evaluate((target) => {
                 const rows = Array.from(document.querySelectorAll('table tr'));
                 for (let row of rows) {
                     const cleanRowText = row.innerText.replace(/[:.-]/g, '').toLowerCase();
                     if (cleanRowText.includes(target)) {
-                        // Ambil semua cell kolom di baris ini
                         const tds = Array.from(row.querySelectorAll('td'));
                         if (tds.length > 0) {
-                            // Cari cell mana saja yang isinya teks angka redaman desimal (contoh: -23.45 atau -19.10)
-                            const cellRedaman = tds.find(td => td.innerText.trim().match(/-?\d+\.\d+/));
+                            // 🚀 KUNCI PERBAIKAN: Wajib mencari cell yang bernilai MINUS agar tidak salah ambil nilai temperatur positif
+                            const cellRedaman = tds.find(td => td.innerText.trim().match(/^-\d+\.\d+/));
                             if (cellRedaman) return cellRedaman.innerText.trim();
                         }
                         
-                        // Fallback regex jika struktur kolom melompat
-                        const match = row.innerText.replace(/\s+/g, ' ').match(/(-?\d+\.\d+)/);
-                        return match ? match[1] : 'N/A (LOS/Mati)';
+                        // Fallback jika tidak sengaja terjebak format LOS (tidak ada minus)
+                        const match = row.innerText.replace(/\s+/g, ' ').match(/(-\d+\.\d+)/);
+                        if (match) return match[1];
+
+                        if (row.innerText.toLowerCase().includes('los') || row.innerText.toLowerCase().includes('down')) {
+                            return 'N/A (LOS/Mati)';
+                        }
                     }
                 }
                 return null;
