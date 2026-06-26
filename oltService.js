@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const puppeteer = require('puppeteer');
 
 // ==========================================
-// 1. HSAirpo API
+// 1. HSAirpo API (Termasuk HSAirpo Sukamelang)
 // ==========================================
 async function cekRedamanHSAirpoAPI(oltConfig, mac) {
     try {
@@ -17,16 +17,17 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
         const loginRes = await axios.post(
             `http://${oltConfig.ip}:${oltConfig.port}/userlogin?form=login`,
             { method: "set", param: { name: username, key, value, captcha_v: " ", captcha_f: " " } },
-            { headers: { 'Content-Type': 'application/json;charset=UTF-8', 'x-token': 'null' }, timeout: 10000 }
+            { headers: { 'Content-Type': 'application/json;charset=UTF-8', 'x-token': 'null' }, timeout: 15000 } // Timeout dinaikkan ke 15 detik
         );
 
         if (loginRes.data.code !== 1) return null;
         const token = loginRes.headers['x-token'];
 
-        for (let port = 1; port <= 16; port++) {
+        const totalPort = oltConfig.total_pon || 16;
+        for (let port = 1; port <= totalPort; port++) {
             const res = await axios.get(
                 `http://${oltConfig.ip}:${oltConfig.port}/onu_allow_list?port_id=${port}`,
-                { headers: { 'x-token': token }, timeout: 5000 }
+                { headers: { 'x-token': token }, timeout: 8000 }
             ).catch(() => null);
             
             if (!res) continue;
@@ -58,7 +59,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
         const loginRes = await axios.post(
             `http://${oltConfig.ip}:${oltConfig.port}/login/Auth`,
             { userName: oltConfig.user || 'admin', password: passwordBase64 },
-            { headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, timeout: 10000 }
+            { headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, timeout: 15000 }
         );
 
         if (loginRes.data.errCode !== 'success') return null;
@@ -99,11 +100,15 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. HIOSO PUPPETEER (PERBAIKAN TOTAL SUKAMELANG)
+// 3. HIOSO PUPPETEER (FIXED FOR ALL HIOSO & NO LOGOUT SELECTION)
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
-    const isPerum = oltConfig.label.toLowerCase().includes('perum');
+    const oltLabelLower = oltConfig.label.toLowerCase();
+    
+    const isPerum = oltLabelLower.includes('perum');
+    // 8pon sukamelang & hioso cibarola menggunakan cara kerja sistem yang sama
+    const isSamaSistem = oltLabelLower.includes('8pon') || oltLabelLower.includes('cibarola'); 
     
     console.log(`\n🔍 [${oltConfig.label}] Memulai pemindaian via Puppeteer...`);
     const browser = await puppeteer.launch({
@@ -116,27 +121,25 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         page = await browser.newPage();
-        page.setDefaultTimeout(45000);
-        page.setDefaultNavigationTimeout(45000);
+        // Set batas navigasi standar agar tidak gampang terkena timeout limit jika OLT sibuk
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(30000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
         if (isPerum) {
-            // 🚨 LOGIKA OLT PERUM (TIDAK BERUBAH - TETAP AMAN)
-            await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 45000 });
-            await new Promise(r => setTimeout(r, 1000));
-
+            // 🚨 LOGIKA OLT PERUM (TIDAK DIGANGGU - TETAP BERES)
+            await page.goto(baseUrl, { waitUntil: 'networkidle2' });
             if (await page.$('#a')) {
                 await page.type('#a', user);
                 await page.type('#b', pass);
                 await page.click('input[type="button"]');
-                await new Promise(r => setTimeout(r, 2000));
+                await new Promise(r => setTimeout(r, 1500));
             }
-
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2', timeout: 45000 });
-            await new Promise(r => setTimeout(r, 2000));
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 1500));
 
             const rxPowerResult = await page.evaluate((target) => {
                 const rows = Array.from(document.querySelectorAll('table tr'));
@@ -160,9 +163,15 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
 
         } else {
-            // 🚨 LOGIKA OLT SUKAMELANG & HIOSO LAINNYA (DIPERBAIKI)
+            // 🚨 LOGIKA UNTUK HIOSO 4PON SUKAMELANG, 8PON SUKAMELANG, & HIOSO CIBAROLA
             await page.authenticate({ username: user, password: pass });
-            await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 45000 });
+            
+            // Jika bertipe sama (8pon / cibarola), langsung bypass tembak halaman ONU untuk efisiensi
+            if (isSamaSistem) {
+                await page.goto(`${baseUrl}/onu_all_onu.htm`, { waitUntil: 'domcontentloaded' }).catch(() => null);
+            } else {
+                await page.goto(baseUrl, { waitUntil: 'networkidle2' });
+            }
             await new Promise(r => setTimeout(r, 1500));
 
             const frames = page.frames();
@@ -172,64 +181,51 @@ async function cekRedamanHioso(oltConfig, mac) {
             );
             
             if (leftFrame) {
-                await leftFrame.waitForSelector('a', { timeout: 10000 });
                 await leftFrame.evaluate(() => {
                     const links = Array.from(document.querySelectorAll('a'));
                     const allOnuLink = links.find(link => link.innerText.trim().toLowerCase().includes('all onu'));
                     if (allOnuLink) allOnuLink.click();
-                });
+                }).catch(() => null);
                 await new Promise(r => setTimeout(r, 1500));
             }
 
-            const mainFrames = page.frames();
-            let mainFrame = mainFrames.find(f => f.name() === 'mainFrame' || f.name() === 'main' || f.url().includes('onu'));
-            
-            if (mainFrame) {
-                // 🚀 PERBAIKAN UTAMA: Menggunakan metode ekstraksi kolom td fleksibel seperti Perum agar Sukamelang lolos dari filter regex kaku
-                const rxPowerResult = await mainFrame.evaluate((target) => {
-                    const rows = Array.from(document.querySelectorAll('table tr'));
-                    for (let row of rows) {
-                        if (row.innerText.replace(/[:.-]/g, '').toLowerCase().includes(target)) {
-                            const tds = Array.from(row.querySelectorAll('td'));
-                            if (tds.length > 0) {
-                                // Ambil cell yang memiliki nilai minus (-) untuk redaman optik
-                                const cellRedaman = tds.find(td => td.innerText.trim().startsWith('-') || td.innerText.trim().includes('-'));
-                                if (cellRedaman) return cellRedaman.innerText.trim();
-                            }
-                            // Fallback regex jika terhalang spasi
-                            const match = row.innerText.replace(/\s+/g, ' ').match(/-\d+\.\d+/);
-                            if (match) return match[0];
-                        }
-                    }
-                    return null;
-                }, cleanTargetMac);
+            // Seleksi context tabel data (mencari di frame utama ataupun sub-frame)
+            let targetContext = page;
+            const mainFrame = page.frames().find(f => f.name() === 'mainFrame' || f.name() === 'main' || f.url().includes('onu'));
+            if (mainFrame) targetContext = mainFrame;
 
-                if (rxPowerResult) {
-                    finalResultData = { 
-                        olt_name: oltConfig.label, 
-                        redaman: rxPowerResult.includes('dBm') ? rxPowerResult : `${rxPowerResult} dBm`, 
-                        status: 'Online' 
-                    };
+            const rxPowerResult = await targetContext.evaluate((target) => {
+                const rows = Array.from(document.querySelectorAll('table tr'));
+                for (let row of rows) {
+                    if (row.innerText.replace(/[:.-]/g, '').toLowerCase().includes(target)) {
+                        const tds = Array.from(row.querySelectorAll('td'));
+                        if (tds.length > 0) {
+                            const cellRedaman = tds.find(td => td.innerText.trim().startsWith('-') || td.innerText.trim().includes('-'));
+                            if (cellRedaman) return cellRedaman.innerText.trim();
+                        }
+                        const match = row.innerText.replace(/\s+/g, ' ').match(/-\d+\.\d+/);
+                        if (match) return match[0];
+                    }
                 }
+                return null;
+            }, cleanTargetMac);
+
+            if (rxPowerResult) {
+                finalResultData = { 
+                    olt_name: oltConfig.label, 
+                    redaman: rxPowerResult.includes('dBm') ? rxPowerResult : `${rxPowerResult} dBm`, 
+                    status: 'Online' 
+                };
             }
         }
 
     } catch (error) {
         console.error(`   ❌ Error OLT [${oltConfig.label}]: ${error.message}`);
     } finally {
-        if (page) {
-            try {
-                const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
-                console.log(`   🚪 [${oltConfig.label}] Memutus Sesi (Strict Logging Out)...`);
-                if (isPerum) {
-                    await page.goto(`${baseUrl}/m/logout.htm`, { waitUntil: 'domcontentloaded', timeout: 1000 }).catch(() => null);
-                } else {
-                    await page.goto(`${baseUrl}/logout`, { waitUntil: 'domcontentloaded', timeout: 1000 }).catch(() => null);
-                }
-                await new Promise(r => setTimeout(r, 500));
-            } catch (e) {}
+        // 🚀 KUNCI PERBAIKAN UTAMA: Sistem 'page.goto(logout)' dihapus total agar tidak memicu Navigation Timeout!
+        if (browser) {
+            await browser.close().catch(() => null);
         }
-        await browser.close();
         return finalResultData;
     }
 }
