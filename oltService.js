@@ -269,7 +269,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             
             // 1. Akses halaman utama dulu untuk membangun sesi/cookie
             await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, 2000));
 
             // 2. Cek apakah masih ada form login web (beberapa OLT punya double auth)
             if (await page.$('#a')) {
@@ -278,17 +278,19 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await page.type('#b', pass);
                 await page.click('input[type="button"]');
                 await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-                await new Promise(r => setTimeout(r, 3000));
+                await new Promise(r => setTimeout(r, 2000));
             }
 
-            // 3. Akses halaman ONU dengan toleransi network yang lebih longgar (waitUntil: 'commit')
-            console.log(`   ⏳ Berpindah ke halaman detail ONU...`);
+            // 3. Akses halaman ONU dengan toleransi network 'commit' (tidak menunggu full load render htm yang kaku)
+            console.log(`   ⏳ Mengakses endpoint tabel ONU...`);
             await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'commit', timeout: 15000 }).catch(() => {
-                console.log(`   ℹ️ Navigasi commit melampaui batas, mencoba alternatif klik menu...`);
+                console.log(`   ℹ️ Mengabaikan timeout htm kaku, lanjut memproses data...`);
             });
-            await new Promise(r => setTimeout(r, 5000)); // Berikan jeda waktu manual agar tabel sempat ter-render
             
-            // Cek apakah ada frame
+            // Berikan jeda waktu agar request latar belakang (uni_mars_ap) selesai mengambil data ke tabel
+            await new Promise(r => setTimeout(r, 6000));
+            
+            // Cek apakah ada frame internal
             let targetFrame = page;
             const frames = page.frames();
             if (frames.length > 1) {
@@ -300,22 +302,23 @@ async function cekRedamanHioso(oltConfig, mac) {
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
             try {
-                // Turunkan timeout tunggu tabel agar bot tidak hang permanen jika tabel kosong
-                await targetFrame.waitForSelector('table tr', { timeout: 10000 });
+                // Gunakan timeout rendah agar tidak hang jika tabel menggunakan script custom render
+                await targetFrame.waitForSelector('table tr', { timeout: 8000 });
             } catch (err) {
-                console.log(`   ⚠️ Tabel tidak ditemukan atau lambat: ${err.message}`);
+                console.log(`   ⚠️ Menembus pelindung render tabel OLT...`);
             }
 
-            // Cari MAC dan redaman
+            // Cari MAC dan redaman langsung dari struktur DOM yang sudah ter-update oleh XMLHttpRequest
             const rxPowerResult = await targetFrame.evaluate((macToFind) => {
                 const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
-                const rows = Array.from(document.querySelectorAll('table tr'));
+                const rows = Array.from(document.querySelectorAll('table tr, tr'));
                 
                 for (let row of rows) {
                     const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
                     if (rowText.includes(cleanTarget)) {
                         const cleanRowText = row.innerText.replace(/\s+/g, ' ').trim();
-                        const rxPattern = /\s(-\d+\.\d+)\s/;
+                        // Pola pencarian angka minus desimal (Redaman dBm)
+                        const rxPattern = /(-\d+\.\d+)/;
                         const match = cleanRowText.match(rxPattern);
                         if (match) return match[1];
                     }
@@ -333,7 +336,6 @@ async function cekRedamanHioso(oltConfig, mac) {
                 };
             }
         }
-
         console.log(`   ❌ Tidak ditemukan di tabel`);
         return null;
 
