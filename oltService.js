@@ -267,73 +267,69 @@ async function cekRedamanHioso(oltConfig, mac) {
         } else {
             console.log(`   Mode: HTTP Basic Auth + Direct URL (Single Login)`);
             
-            // 1. Akses halaman utama dengan toleransi 'commit' agar tidak memicu timeout jaringan OLT yang kaku
-            console.log(`   ⏳ Membuka halaman utama OLT...`);
-            await page.goto(baseUrl, { waitUntil: 'commit', timeout: 20000 }).catch(() => {
-                console.log(`   ℹ️ Mengabaikan batas load halaman utama, lanjut...`);
-            });
+            // 1. Akses halaman utama dulu untuk membangun sesi/cookie
+            await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
             await new Promise(r => setTimeout(r, 3000));
 
-            // 2. Cek apakah masih ada form login web
+            // 2. Cek apakah masih ada form login web (beberapa OLT punya double auth)
             if (await page.$('#a')) {
                 console.log(`   🔑 Mengisi form login web...`);
                 await page.type('#a', user);
                 await page.type('#b', pass);
                 await page.click('input[type="button"]');
-                await page.waitForNavigation({ waitUntil: 'commit', timeout: 15000 }).catch(() => {});
-                await new Promise(r => setTimeout(r, 2000));
+                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+                await new Promise(r => setTimeout(r, 3000));
             }
 
-            // 3. Akses langsung htm induk tabel ONU
-            console.log(`   ⏳ Mengakses endpoint tabel ONU...`);
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+            // 3. Akses halaman ONU
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await new Promise(r => setTimeout(r, 3000));
             
-            // Berikan jeda waktu agar request sw.cgi selesai memuat tabel sepenuhnya
-            await new Promise(r => setTimeout(r, 6000));
-            
-            // Cari mainFrame tempat tabel di-render berdasarkan target DOM
+            // Cek apakah ada frame
+            let targetFrame = page;
             const frames = page.frames();
-            let targetFrame = frames.find(f => 
-                f.name() === 'mainFrame' || 
-                f.name() === 'myiframe2' || 
-                f.url().includes('onu')
-            ) || page;
+            if (frames.length > 1) {
+                targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
+                console.log(`   ✅ Frame ditemukan: ${frames.length} frames`);
+            } else {
+                console.log(`   ℹ️ Tidak ada frame, gunakan main page`);
+            }
 
-            console.log(`   ⏳ Menunggu data tabel di frame target dimuat...`);
+            console.log(`   ⏳ Menunggu data tabel dimuat...`);
             try {
-                await targetFrame.waitForSelector('tr, table tr', { timeout: 5000 });
-            } catch (err) {}
+                await targetFrame.waitForSelector('table tr', { timeout: 20000 });
+            } catch (err) {
+                console.log(`   ⚠️ Tabel tidak ditemukan: ${err.message}`);
+            }
 
-            // Bersihkan format MAC masukan agar menjadi 12 karakter murni (contoh: 28dee52c1279)
-            const cleanTarget = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 12);
-            console.log(`   🔍 Mencocokkan MAC murni: ${cleanTarget}`);
-
+            // Cari MAC dan redaman
             const rxPowerResult = await targetFrame.evaluate((macToFind) => {
-                const rows = Array.from(document.querySelectorAll('tr, table tr'));
+                const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
+                const rows = Array.from(document.querySelectorAll('table tr'));
                 
                 for (let row of rows) {
-                    const rowTextClean = row.innerText.replace(/[:.-]/g, '').toLowerCase();
-                    if (rowTextClean.includes(macToFind)) {
-                        const fullText = row.innerText.replace(/\s+/g, ' ').trim();
-                        // Mengambil angka minus desimal (dBm)
-                        const rxPattern = /(-\d+\.\d+)/;
-                        const match = fullText.match(rxPattern);
+                    const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
+                    if (rowText.includes(cleanTarget)) {
+                        const cleanRowText = row.innerText.replace(/\s+/g, ' ').trim();
+                        const rxPattern = /\s(-\d+\.\d+)\s/;
+                        const match = cleanRowText.match(rxPattern);
                         if (match) return match[1];
                     }
                 }
                 return null;
-            }, cleanTarget);
+            }, searchMac);
 
             if (rxPowerResult) {
                 console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
                 return { 
                     olt_name: oltConfig.label, 
-                    mac_onu: mac, 
+                    mac_onu: searchMac, 
                     redaman: `${rxPowerResult} dBm`, 
                     status: 'Online' 
                 };
             }
         }
+
         console.log(`   ❌ Tidak ditemukan di tabel`);
         return null;
 
