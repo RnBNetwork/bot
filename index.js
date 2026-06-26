@@ -1,4 +1,4 @@
-// index.js - RnBNET BOT (1 Message Only & Clean Version)
+// index.js - RnBNET BOT (Public Access - Anti-Hang MikroTik)
 const path = require('path');
 const express = require('express');
 const qrcode = require('qrcode');
@@ -122,6 +122,7 @@ client.on('message_create', async (msg) => {
 
         if (['!cek', '!aktifkan'].includes(command)) {
             if (args.length < 3) {
+                // ✅ FIX: Backtick sudah ditutup dengan benar di akhir baris
                 await msg.reply(`❌ *Format Salah*\n\nGunakan: \`${command} [mikrotik] [username]\`\nContoh: \`${command} cibarola liacahyani\``);
                 return;
             }
@@ -148,7 +149,7 @@ client.on('message_create', async (msg) => {
 });
 
 // ==========================================
-// 6. HANDLER CEK REDAMAN (SILENT BACKGROUND)
+// 6. HANDLER CEK REDAMAN
 // ==========================================
 async function handleCekRedaman(msg, serverKey, username) {
     let api;
@@ -156,7 +157,7 @@ async function handleCekRedaman(msg, serverKey, username) {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
         
-        console.log(`🔍 Mencari *${username}* di MikroTik *${targetServer.label}*...`);
+        await msg.reply(`🔍 Mencari *${username}* di MikroTik *${targetServer.label}*...`);
         const userObj = await getUserFromMikrotik(api, username);
         
         let rawMac = userObj['caller-id'] || 'Any';
@@ -169,27 +170,17 @@ async function handleCekRedaman(msg, serverKey, username) {
         }
 
         const mac = rawMac.trim().toLowerCase();
-        console.log(`📡 MAC Ditemukan: ${mac} | Menyisir OLT...`);
+        await msg.reply(`📡 *MAC Ditemukan:*\n\`${mac}\`\n\n_Menyisir OLT di cabang ${targetServer.label}..._`);
 
         const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
         
-        // Kirim 1 pesan utuh di akhir jika ditemukan, atau infokan jika tidak ada
-        if (!hasilOlt || hasilOlt.startsWith('⚠️')) {
-            await msg.reply(
-                `⚠️ *ONU Tidak Ditemukan*\n\n` +
-                `👤 *Pelanggan:* ${username}\n` +
-                `💻 *Server:* ${targetServer.label}\n` +
-                `🔒 *MAC:* \`${mac}\``
-            );
-        } else {
-            await msg.reply(
-                `📌 *OLT DITEMUKAN*\n\n` +
-                `👤 *Pelanggan:* ${username}\n` +
-                `💻 *Server:* ${targetServer.label}\n` +
-                `🔒 *MAC:* \`${mac}\`\n\n` +
-                `${hasilOlt}`
-            );
-        }
+        await msg.reply(
+            `📊 *Hasil Cek Redaman OLT*\n\n` +
+            `👤 *Pelanggan:* ${username}\n` +
+            `💻 *Server:* ${targetServer.label}\n` +
+            `🔒 *MAC:* \`${mac}\`\n\n` +
+            `${hasilOlt}`
+        );
 
     } catch (err) {
         await msg.reply(`❌ *Gagal Cek Redaman*\n\n${err.message}`);
@@ -199,7 +190,7 @@ async function handleCekRedaman(msg, serverKey, username) {
 }
 
 // ==========================================
-// 7. HANDLER AKTIVASI (SILENT BACKGROUND)
+// 7. HANDLER AKTIVASI
 // ==========================================
 async function handleAktivasi(msg, serverKey, username) {
     let api;
@@ -207,7 +198,8 @@ async function handleAktivasi(msg, serverKey, username) {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
         
-        console.log(`⏳ Memproses Open Isolir | User: ${username} | Server: ${targetServer.label}`);
+        await msg.reply(`⏳ *Memproses Open Isolir*\n\n👤 User: ${username}\n💻 Server: ${targetServer.label}\n\n_Mohon tunggu..._`);
+        
         const userObj = await getUserFromMikrotik(api, username);
         
         await withTimeout(
@@ -228,39 +220,31 @@ async function handleAktivasi(msg, serverKey, username) {
             rawMac = activeUser['caller-id'] || rawMac;
         }
 
+        let report = 
+            `✨ *RnB Network - Aktivasi Sukses*\n\n` +
+            `✅ *Status:* BERHASIL\n` +
+            `👤 *Pelanggan:* ${username}\n` +
+            `🛜 *Paket:* ${paket}\n` +
+            `💻 *Server:* ${targetServer.label}\n` +
+            `🌐 *IP:* ${ip}\n` +
+            `🔒 *MAC Asli:* \`${rawMac}\`\n`;
+
         if (rawMac && rawMac !== 'Any') {
             const mac = rawMac.trim().toLowerCase();
+            report += `✂️ *MAC OLT:* \`${mac}\`\n\n🔍 _Menyisir OLT otomatis..._`;
+            await msg.reply(report);
+            
             const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
-            
-            let finalReport = 
-                `✨ *RnB Network - Aktivasi Sukses*\n\n` +
-                `✅ *Status:* BERHASIL\n` +
+            await msg.reply(
+                `✨ *RnB Network - Final Report*\n\n` +
                 `👤 *Pelanggan:* ${username}\n` +
-                `🛜 *Paket:* ${paket}\n` +
                 `💻 *Server:* ${targetServer.label}\n` +
-                `🌐 *IP:* ${ip}\n` +
-                `🔒 *MAC:* \`${mac}\`\n\n`;
-
-            if (!hasilOlt || hasilOlt.startsWith('⚠️')) {
-                finalReport += `⚠️ _ONU tidak ditemukan di OLT manapun pada cabang ini._`;
-            } else {
-                finalReport += `📌 *Detail OLT:*\n${hasilOlt}`;
-            }
-            
-            // Kirim hanya 1 pesan gabungan di akhir
-            await msg.reply(finalReport);
+                `🔒 *MAC OLT:* \`${mac}\`\n\n` +
+                `${hasilOlt}`
+            );
         } else {
-            let finalReport = 
-                `✨ *RnB Network - Aktivasi Sukses*\n\n` +
-                `✅ *Status:* BERHASIL\n` +
-                `👤 *Pelanggan:* ${username}\n` +
-                `🛜 *Paket:* ${paket}\n` +
-                `💻 *Server:* ${targetServer.label}\n` +
-                `🌐 *IP:* ${ip}\n` +
-                `🔒 *MAC Asli:* \`${rawMac}\`\n\n` +
-                `⚠️ _Pengecekan OLT dilewati karena MAC tidak terbaca._`;
-                
-            await msg.reply(finalReport);
+            report += `\n⚠️ _Pengecekan OLT dilewati karena MAC tidak terbaca._`;
+            await msg.reply(report);
         }
     } catch (err) {
         await msg.reply(`❌ *Gagal Aktivasi*\n\n${err.message}`);
