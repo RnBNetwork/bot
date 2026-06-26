@@ -99,7 +99,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. HIOSO PUPPETEER (STRICT LOGOUT ASSURANCE)
+// 3. HIOSO PUPPETEER (FIXED FOR OLT PERUM)
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
@@ -127,7 +127,7 @@ async function cekRedamanHioso(oltConfig, mac) {
         await new Promise(r => setTimeout(r, 1500));
 
         // ==========================================
-        // MODE 1: IFRAME = true (Cibarola & 8Pon)
+        // MODE 1: IFRAME = true (Cibarola & 8Pon Sukamelang)
         // ==========================================
         if (oltConfig.iframe) {
             const frames = page.frames();
@@ -165,7 +165,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
 
         // ==========================================
-        // MODE 2: IFRAME = false (Perum & Sukamelang 4Pon)
+        // MODE 2: IFRAME = false (DIOPTIMALKAN UNTUK OLT PERUM)
         // ==========================================
         } else {
             if (await page.$('#a')) {
@@ -182,24 +182,40 @@ async function cekRedamanHioso(oltConfig, mac) {
             const frames = page.frames();
             if (frames.length > 1) targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
 
+            // 🚀 PERBAIKAN UTAMA: Regex pembacaan baris tabel dibuat kebal spasi dan kebal LOS/Mati
             const rxPowerResult = await targetFrame.evaluate((target) => {
                 const rows = Array.from(document.querySelectorAll('table tr'));
                 for (let row of rows) {
-                    if (row.innerText.replace(/[:.-]/g, '').toLowerCase().includes(target)) {
-                        const match = row.innerText.replace(/\s+/g, ' ').match(/(-\d+\.\d+)/);
-                        return match ? match[1] : null;
+                    const cleanRowText = row.innerText.replace(/[:.-]/g, '').toLowerCase();
+                    if (cleanRowText.includes(target)) {
+                        // Ambil semua cell kolom di baris ini
+                        const tds = Array.from(row.querySelectorAll('td'));
+                        if (tds.length > 0) {
+                            // Cari cell mana saja yang isinya teks angka redaman desimal (contoh: -23.45 atau -19.10)
+                            const cellRedaman = tds.find(td => td.innerText.trim().match(/-?\d+\.\d+/));
+                            if (cellRedaman) return cellRedaman.innerText.trim();
+                        }
+                        
+                        // Fallback regex jika struktur kolom melompat
+                        const match = row.innerText.replace(/\s+/g, ' ').match(/(-?\d+\.\d+)/);
+                        return match ? match[1] : 'N/A (LOS/Mati)';
                     }
                 }
                 return null;
             }, cleanTargetMac);
 
-            if (rxPowerResult) finalResultData = { olt_name: oltConfig.label, redaman: `${rxPowerResult} dBm`, status: 'Online' };
+            if (rxPowerResult) {
+                finalResultData = { 
+                    olt_name: oltConfig.label, 
+                    redaman: rxPowerResult.includes('dBm') ? rxPowerResult : `${rxPowerResult} dBm`, 
+                    status: rxPowerResult.includes('N/A') ? 'LOS/Offline' : 'Online' 
+                };
+            }
         }
 
     } catch (error) {
         console.error(`   ❌ Error OLT [${oltConfig.label}]: ${error.message}`);
     } finally {
-        // 🚀 PROSES MUTLAK & YAKIN LOGOUT SEBELUM BROWSER CLOSE
         if (page) {
             try {
                 const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
@@ -210,11 +226,11 @@ async function cekRedamanHioso(oltConfig, mac) {
                 } else {
                     await page.goto(`${baseUrl}/m/logout.htm`, { waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
                 }
-                await new Promise(r => setTimeout(r, 500)); // Jeda waktu kepastian server memproses perintah logout
+                await new Promise(r => setTimeout(r, 500));
             } catch (e) {}
         }
         await browser.close();
-        return finalResultData; // Kembalikan data hasil jika ada
+        return finalResultData;
     }
 }
 
@@ -226,13 +242,11 @@ async function scanSemuaOlt(oltList, mac, msg, userObj, targetServer) {
     const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
     const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
 
-    // 1. Scan OLT HSAirpo (Paralel)
     if (axiosOlts.length > 0) {
         const axiosPromises = axiosOlts.map(async (olt) => {
             let hasil = olt.method === 'cibarola' ? await cekRedamanHSAirpoCibarola(olt, mac) : await cekRedamanHSAirpoAPI(olt, mac);
             if (hasil) {
                 ditemukan = true;
-                // LANGSUNG KIRIM KE WHATSAPP DETIK INI JUGA
                 await msg.reply(
                     `📌 *HASIL CEK REDAMAN OLT*\n\n` +
                     `👤 *Pelanggan:* ${userObj.name}\n` +
@@ -245,13 +259,11 @@ async function scanSemuaOlt(oltList, mac, msg, userObj, targetServer) {
         await Promise.all(axiosPromises);
     }
 
-    // 2. Scan OLT Hioso (Sekuensial / Antrian)
     if (puppeteerOlts.length > 0) {
         for (const olt of puppeteerOlts) {
             const hasil = await cekRedamanHioso(olt, mac);
             if (hasil) {
                 ditemukan = true;
-                // LANGSUNG KIRIM KE WHATSAPP DETIK INI JUGA
                 await msg.reply(
                     `📌 *HASIL CEK REDAMAN OLT*\n\n` +
                     `👤 *Pelanggan:* ${userObj.name}\n` +
