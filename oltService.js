@@ -115,7 +115,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. Hioso (Puppeteer) - SELEKTIF POTONG UJUNG MAC
+// 3. Hioso (Puppeteer) - SELEKTIF POTONG UJUNG MAC + TIMEOUT LOOSE
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     // Menghapus semua separator titik dua/strip/titik dan mengambil 10 karakter awal murni (potong 2 karakter di ujung)
@@ -131,8 +131,10 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
-        page.setDefaultTimeout(20000);
-        page.setDefaultNavigationTimeout(20000);
+        
+        // 🚀 TIMEOUT DIPIKUL LEBIH LONGGAR (45 DETIK) AGAR TIDAK MUDAH TIMEOUT SAAT OLT LEMOT
+        page.setDefaultTimeout(45000);
+        page.setDefaultNavigationTimeout(45000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
@@ -141,9 +143,11 @@ async function cekRedamanHioso(oltConfig, mac) {
         console.log(`   ⏳ Mengakses halaman utama OLT...`);
         
         await page.authenticate({ username: user, password: pass });
-        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
         
-        await new Promise(r => setTimeout(r, 1000));
+        // 🚀 MENGGUNAKAN 'networkidle2' AGAR MEMASTIKAN HALAMAN SELESAI LOADING TOTAL
+        await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 45000 });
+        
+        await new Promise(r => setTimeout(r, 2000));
 
         // ==========================================
         // MODE 1: IFRAME = true (Cibarola & 8Pon)
@@ -160,7 +164,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             if (!leftFrame) throw new Error('Gagal memuat menu frame');
 
             try {
-                await leftFrame.waitForSelector('a', { timeout: 5000 });
+                await leftFrame.waitForSelector('a', { timeout: 10000 });
                 await leftFrame.evaluate(() => {
                     const links = Array.from(document.querySelectorAll('a'));
                     const allOnuLink = links.find(link => 
@@ -173,7 +177,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                 console.log(`   ⚠️ Gagal klik All ONU: ${err.message}`);
             }
             
-            await new Promise(r => setTimeout(r, 1200));
+            await new Promise(r => setTimeout(r, 2000));
 
             const mainFrames = page.frames();
             let mainFrame = mainFrames.find(f => 
@@ -190,7 +194,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                     if (typeof setNumPerPage === 'function') setNumPerPage(300);
                     else if (typeof OnPageSizeChange === 'function') OnPageSizeChange(300);
                 });
-                await new Promise(r => setTimeout(r, 800));
+                await new Promise(r => setTimeout(r, 1000));
             } catch (err) {}
 
             const rxPowerResult = await mainFrame.evaluate((target) => {
@@ -219,11 +223,12 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await page.type('#a', user);
                 await page.type('#b', pass);
                 await page.click('input[type="button"]');
-                await new Promise(r => setTimeout(r, 1000));
+                await new Promise(r => setTimeout(r, 2000));
             }
 
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-            await new Promise(r => setTimeout(r, 1000));
+            console.log(`   ⏳ Mengakses data halaman ONU...`);
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2', timeout: 45000 });
+            await new Promise(r => setTimeout(r, 2000));
             
             let targetFrame = page;
             const frames = page.frames();
@@ -256,11 +261,10 @@ async function cekRedamanHioso(oltConfig, mac) {
     } catch (error) {
         console.error(`   ❌ Error: ${error.message}`);
         return { error: error.message };
-    } finally {
+    } finaly {
         await browser.close();
     }
 }
-
 // ==========================================
 // 4. SCAN SEMUA OLT
 // ==========================================
