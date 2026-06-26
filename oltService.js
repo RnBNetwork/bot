@@ -1,4 +1,4 @@
-// oltService.js - ULTRA FAST & ACCURATE MAC SEARCH
+// oltService.js - ACCURATE MAC REGEX MATCH & FAST OPTIMIZED PUPPETEER
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -99,9 +99,10 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. HIOSO PUPPETEER (ANTI LEWAT + ULTRA FAST)
+// 3. HIOSO PUPPETEER (ANTI LEWAT + SPEED BOOSTER)
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
+    // Ambil 12 karakter murni dari MAC tanpa pemisah (misal: c8c465823d95)
     const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 12);
     
     const browser = await puppeteer.launch({
@@ -111,25 +112,24 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         const page = await browser.newPage();
-        // Kurangi timeout agar respon kirim ke bot tidak lambat jika OLT mati
-        page.setDefaultTimeout(10000);
-        page.setDefaultNavigationTimeout(10000);
+        // Kurangi timeout navigasi agar bot tidak gantung kelamaan jika OLT lemot
+        page.setDefaultTimeout(12000);
+        page.setDefaultNavigationTimeout(12000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
         await page.authenticate({ username: user, password: pass });
-        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 8000 });
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
         
-        // Pangkas waktu tunggu buatan dari 3 detik menjadi 1 detik saja (Mempercepat eksekusi)
-        await new Promise(r => setTimeout(r, 1000));
+        // Pangkas waktu tunggu dari 3000ms menjadi 800ms demi mempercepat kiriman hasil ke bot
+        await new Promise(r => setTimeout(r, 800));
 
         if (oltConfig.iframe) {
-            let leftFrame = null;
             const frames = page.frames();
-            leftFrame = frames.find(f => f.name() === 'leftFrame' || f.name() === 'menuFrame' || (f.url() && f.url().includes('menu')));
-            if (!leftFrame) throw new Error('No Frame');
+            let leftFrame = frames.find(f => f.name() === 'leftFrame' || f.name() === 'menuFrame' || (f.url() && f.url().includes('menu')));
+            if (!leftFrame) throw new Error('No Left Frame');
 
             await leftFrame.waitForSelector('a', { timeout: 3000 });
             await leftFrame.evaluate(() => {
@@ -138,13 +138,13 @@ async function cekRedamanHioso(oltConfig, mac) {
                 if (allOnuLink) allOnuLink.click();
             });
             
-            await new Promise(r => setTimeout(r, 1200));
+            await new Promise(r => setTimeout(r, 1000));
 
             const mainFrames = page.frames();
             let mainFrame = mainFrames.find(f => f.name() === 'mainFrame' || f.name() === 'main' || (f.url() && f.url().includes('onu')));
             if (!mainFrame) throw new Error('No Main Frame');
 
-            // Set size 300 secepatnya agar melompati pagination data
+            // Naikkan jumlah item per halaman secepat mungkin agar seluruh ONU terbaca sekaligus
             try {
                 await mainFrame.evaluate(() => {
                     if (typeof setNumPerPage === 'function') setNumPerPage(300);
@@ -153,6 +153,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await new Promise(r => setTimeout(r, 800));
             } catch (err) {}
 
+            // Cari baris menggunakan penyamamaan regex tanpa karakter pemisah (Anti-Miss MAC)
             const rxPowerResult = await mainFrame.evaluate((target) => {
                 const rows = Array.from(document.querySelectorAll('table tr'));
                 for (let row of rows) {
@@ -174,11 +175,11 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await page.type('#a', user);
                 await page.type('#b', pass);
                 await page.click('input[type="button"]');
-                await new Promise(r => setTimeout(r, 1000));
+                await new Promise(r => setTimeout(r, 800));
             }
 
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 8000 });
-            await new Promise(r => setTimeout(r, 1000));
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+            await new Promise(r => setTimeout(r, 800));
             
             let targetFrame = page;
             const frames = page.frames();
@@ -205,20 +206,20 @@ async function cekRedamanHioso(oltConfig, mac) {
         return null;
     } catch (error) {
         return null;
-    } finally {
+    } final {
         await browser.close();
     }
 }
 
 // ==========================================
-// 4. SCAN SEMUA OLT WITH CONCURRENCY
+// 4. SCAN SEMUA OLT
 // ==========================================
 async function scanSemuaOlt(oltList, mac) {
     const hasilAkhir = [];
     const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
     const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
 
-    // HS Airpo berjalan secara paralel cepat
+    // Scan OLT HSAirpo secara bersamaan (Sangat Cepat)
     if (axiosOlts.length > 0) {
         const axiosPromises = axiosOlts.map(async (olt) => {
             let hasil = olt.method === 'cibarola' ? await cekRedamanHSAirpoCibarola(olt, mac) : await cekRedamanHSAirpoAPI(olt, mac);
@@ -229,7 +230,7 @@ async function scanSemuaOlt(oltList, mac) {
         await Promise.all(axiosPromises);
     }
 
-    // Hioso berjalan sekuensial namun dengan delay terpangkas habis
+    // Scan OLT Hioso secara bergiliran dengan waktu delay yang sudah dipangkas habis
     if (puppeteerOlts.length > 0) {
         for (const olt of puppeteerOlts) {
             const hasil = await cekRedamanHioso(olt, mac);
