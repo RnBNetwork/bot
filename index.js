@@ -53,7 +53,7 @@ client.on('disconnected', (reason) => {
 });
 
 // ==========================================
-// 4. HELPER MIKROTIK
+// 4. HELPER MIKROTIK (PERBAIKAN TIMEOUT & OPTIMASI BEBAN)
 // ==========================================
 function withTimeout(promise, ms, errMsg) {
     let timeoutId;
@@ -74,11 +74,11 @@ async function connectMikrotik(serverKey) {
         port: targetServer.mikrotik.port,
         user: targetServer.mikrotik.user,
         password: targetServer.mikrotik.pass,
-        timeout: 15
+        timeout: 30 // Dinaikkan menjadi 30 detik agar koneksi lebih sabar menunggu MikroTik rileks
     });
 
     try {
-        await withTimeout(api.connect(), 15000, `Timeout koneksi ke MikroTik ${targetServer.label}.`);
+        await withTimeout(api.connect(), 30000, `Timeout koneksi ke MikroTik ${targetServer.label}.`);
         return { api, targetServer };
     } catch (err) {
         throw new Error(`Gagal konek MikroTik ${targetServer.label}.`);
@@ -86,17 +86,28 @@ async function connectMikrotik(serverKey) {
 }
 
 async function getUserFromMikrotik(api, username) {
-    const secrets = await withTimeout(api.write('/ppp/secret/print'), 25000, 'Timeout Query Secret MikroTik.');
+    // Memberikan toleransi waktu tunggu cetak database hingga 35 detik jika CPU router sedang sibuk
+    const secrets = await withTimeout(api.write('/ppp/secret/print'), 35000, 'Timeout Query Secret MikroTik.');
     const targetName = username.trim().toLowerCase();
+    
+    // Pencarian Utama: Harus sama persis
     const userObj = secrets.find(x => x.name && x.name.trim().toLowerCase() === targetName);
-    if (!userObj) throw new Error(`User "${username}" tidak ditemukan di MikroTik`);
+    
+    if (!userObj) {
+        // Pencarian Cadangan: Jika ada spasi tertinggal di MikroTik, cari yang mengandung kata tersebut
+        const looserObj = secrets.find(x => x.name && x.name.trim().toLowerCase().includes(targetName));
+        if (!looserObj) throw new Error(`User "${username}" benar-benar tidak ditemukan di MikroTik`);
+        return looserObj;
+    }
     return userObj;
 }
 
 async function getActiveUserFromMikrotik(api, username) {
-    const activeUsers = await withTimeout(api.write('/ppp/active/print'), 25000, 'Timeout Query Active MikroTik.');
+    const activeUsers = await withTimeout(api.write('/ppp/active/print'), 35000, 'Timeout Query Active MikroTik.');
     const targetName = username.trim().toLowerCase();
-    return activeUsers.find(x => x.name && x.name.trim().toLowerCase() === targetName);
+    
+    return activeUsers.find(x => x.name && x.name.trim().toLowerCase() === targetName) || 
+           activeUsers.find(x => x.name && x.name.trim().toLowerCase().includes(targetName));
 }
 
 async function safeCloseMikrotik(api) {
@@ -128,12 +139,10 @@ client.on('message_create', async (msg) => {
 
             jumlahAntrian++;
 
-            // Jika ada antrian di depan, langsung kasih tahu user posisi antriannya agar ada notif
             if (jumlahAntrian > 1) {
                 await msg.reply(`⏳ *[RnBNET ANTRIAN]* Mohon tunggu, perintah Anda berada di *Antrian Nomor [ ${jumlahAntrian - 1} ]* dan akan diproses otomatis.`);
             }
 
-            // Eksekusi antrian serial
             commandQueue = commandQueue.then(async () => {
                 try {
                     if (command === '!cek') {
@@ -145,7 +154,7 @@ client.on('message_create', async (msg) => {
                 } catch (queueErr) {
                     console.error('Error antrian:', queueErr);
                 } finally {
-                    jumlahAntrian--; // Kurangi antrian saat selesai
+                    jumlahAntrian--;
                 }
             });
         }
@@ -156,7 +165,7 @@ client.on('message_create', async (msg) => {
 });
 
 // ==========================================
-// 6. HANDLER CEK REDAMAN (NEW MESSAGE REPLY)
+// 6. HANDLER CEK REDAMAN (REAL-TIME REPLY)
 // ==========================================
 async function handleCekRedaman(msg, serverKey, username) {
     let api;
@@ -164,7 +173,7 @@ async function handleCekRedaman(msg, serverKey, username) {
     let userObj;
     let mac = null;
     
-    const statusMsg = await msg.reply(`⏳ *[RnBNET]* Menghubungi MikroTik untuk mengambil data MAC user *${username}...*`);
+    await msg.reply(`⏳ *[RnBNET]* Menghubungi MikroTik untuk mengambil data MAC user *${username}...*`);
     
     try {
         const connection = await connectMikrotik(serverKey);
@@ -192,10 +201,8 @@ async function handleCekRedaman(msg, serverKey, username) {
     }
 
     try {
-        // Hapus update edit status agar chat mengalir natural tanpa tabrakan sesi
         console.log(`🔍 MAC Ditemukan: ${mac}. Memulai scan OLT...`);
 
-        // Panggil fungsi dengan membawa parameter msg, userObj, dan targetServer
         const isFound = await scanSemuaOlt(targetServer.olts, mac, msg, userObj, targetServer);
         
         if (!isFound) {
@@ -213,7 +220,7 @@ async function handleCekRedaman(msg, serverKey, username) {
 }
 
 // ==========================================
-// 7. HANDLER AKTIVASI (NEW MESSAGE REPLY)
+// 7. HANDLER AKTIVASI (REAL-TIME REPLY)
 // ==========================================
 async function handleAktivasi(msg, serverKey, username) {
     let api;
@@ -232,8 +239,8 @@ async function handleAktivasi(msg, serverKey, username) {
         
         await withTimeout(
             api.write(['/ppp/secret/set', `=.id=${userObj['.id']}`, '=disabled=no']),
-            15000,
-            'Timeout'
+            20000,
+            'Timeout: Gagal mengirim perintah isolir.'
         );
         
         await new Promise(r => setTimeout(r, 500));
@@ -259,7 +266,6 @@ async function handleAktivasi(msg, serverKey, username) {
 
     if (mac) {
         try {
-            // Jalankan scan OLT real-time
             const isFound = await scanSemuaOlt(targetServer.olts, mac, msg, userObj, targetServer);
             
             if (!isFound) {
