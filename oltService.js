@@ -1,10 +1,10 @@
-// oltService.js - ACCURATE MAC REGEX MATCH & GUARANTEED FORCE LOGOUT FOR HIOSO
+// oltService.js - ACCURATE MAC REGEX MATCH FOR HIOSO & HSAIRPO (WITHOUT LOGOUT BLOCK)
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
 
 // ==========================================
-// 1. HSAirpo API (Termasuk HSAirpo Sukamelang)
+// 1. HSAirpo API
 // ==========================================
 async function cekRedamanHSAirpoAPI(oltConfig, mac) {
     try {
@@ -17,17 +17,16 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
         const loginRes = await axios.post(
             `http://${oltConfig.ip}:${oltConfig.port}/userlogin?form=login`,
             { method: "set", param: { name: username, key, value, captcha_v: " ", captcha_f: " " } },
-            { headers: { 'Content-Type': 'application/json;charset=UTF-8', 'x-token': 'null' }, timeout: 15000 } // Timeout dinaikkan ke 15 detik
+            { headers: { 'Content-Type': 'application/json;charset=UTF-8', 'x-token': 'null' }, timeout: 10000 }
         );
 
         if (loginRes.data.code !== 1) return null;
         const token = loginRes.headers['x-token'];
 
-        const totalPort = oltConfig.total_pon || 16;
-        for (let port = 1; port <= totalPort; port++) {
+        for (let port = 1; port <= 16; port++) {
             const res = await axios.get(
                 `http://${oltConfig.ip}:${oltConfig.port}/onu_allow_list?port_id=${port}`,
-                { headers: { 'x-token': token }, timeout: 8000 }
+                { headers: { 'x-token': token }, timeout: 5000 }
             ).catch(() => null);
             
             if (!res) continue;
@@ -59,7 +58,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
         const loginRes = await axios.post(
             `http://${oltConfig.ip}:${oltConfig.port}/login/Auth`,
             { userName: oltConfig.user || 'admin', password: passwordBase64 },
-            { headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, timeout: 15000 }
+            { headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' }, timeout: 10000 }
         );
 
         if (loginRes.data.errCode !== 'success') return null;
@@ -100,15 +99,11 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. HIOSO PUPPETEER (FIXED FOR ALL HIOSO & NO LOGOUT SELECTION)
+// 3. HIOSO PUPPETEER
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
-    const oltLabelLower = oltConfig.label.toLowerCase();
-    
-    const isPerum = oltLabelLower.includes('perum');
-    // 8pon sukamelang & hioso cibarola menggunakan cara kerja sistem yang sama
-    const isSamaSistem = oltLabelLower.includes('8pon') || oltLabelLower.includes('cibarola'); 
+    const isPerum = oltConfig.label.toLowerCase().includes('perum');
     
     console.log(`\n🔍 [${oltConfig.label}] Memulai pemindaian via Puppeteer...`);
     const browser = await puppeteer.launch({
@@ -121,16 +116,14 @@ async function cekRedamanHioso(oltConfig, mac) {
 
     try {
         page = await browser.newPage();
-        // Set batas navigasi standar agar tidak gampang terkena timeout limit jika OLT sibuk
-        page.setDefaultTimeout(30000);
-        page.setDefaultNavigationTimeout(30000);
+        page.setDefaultTimeout(45000);
+        page.setDefaultNavigationTimeout(45000);
 
         const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
         if (isPerum) {
-            // 🚨 LOGIKA OLT PERUM (TIDAK DIGANGGU - TETAP BERES)
             await page.goto(baseUrl, { waitUntil: 'networkidle2' });
             if (await page.$('#a')) {
                 await page.type('#a', user);
@@ -163,15 +156,8 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
 
         } else {
-            // 🚨 LOGIKA UNTUK HIOSO 4PON SUKAMELANG, 8PON SUKAMELANG, & HIOSO CIBAROLA
             await page.authenticate({ username: user, password: pass });
-            
-            // Jika bertipe sama (8pon / cibarola), langsung bypass tembak halaman ONU untuk efisiensi
-            if (isSamaSistem) {
-                await page.goto(`${baseUrl}/onu_all_onu.htm`, { waitUntil: 'domcontentloaded' }).catch(() => null);
-            } else {
-                await page.goto(baseUrl, { waitUntil: 'networkidle2' });
-            }
+            await page.goto(baseUrl, { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 1500));
 
             const frames = page.frames();
@@ -189,7 +175,6 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await new Promise(r => setTimeout(r, 1500));
             }
 
-            // Seleksi context tabel data (mencari di frame utama ataupun sub-frame)
             let targetContext = page;
             const mainFrame = page.frames().find(f => f.name() === 'mainFrame' || f.name() === 'main' || f.url().includes('onu'));
             if (mainFrame) targetContext = mainFrame;
@@ -222,7 +207,6 @@ async function cekRedamanHioso(oltConfig, mac) {
     } catch (error) {
         console.error(`   ❌ Error OLT [${oltConfig.label}]: ${error.message}`);
     } finally {
-        // 🚀 KUNCI PERBAIKAN UTAMA: Sistem 'page.goto(logout)' dihapus total agar tidak memicu Navigation Timeout!
         if (browser) {
             await browser.close().catch(() => null);
         }
@@ -231,7 +215,7 @@ async function cekRedamanHioso(oltConfig, mac) {
 }
 
 // ==========================================
-// 4. SCAN SEMUA OLT - REAL-TIME INSTANT REPLY
+// 4. SCAN SEMUA OLT
 // ==========================================
 async function scanSemuaOlt(oltList, mac, msg, userObj, targetServer) {
     let ditemukan = false;
