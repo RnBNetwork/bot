@@ -99,7 +99,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. HIOSO PUPPETEER (DENGAN AKURASI SPEKTRO PERUM VS SUKAMELANG)
+// 3. HIOSO PUPPETEER (PERBAIKAN TOTAL SUKAMELANG)
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
@@ -124,11 +124,10 @@ async function cekRedamanHioso(oltConfig, mac) {
         const pass = oltConfig.pass || 'admin';
 
         if (isPerum) {
-            // 🚨 LOGIKA UTAMA OLT PERUM (HA7304V Form Login)
+            // 🚨 LOGIKA OLT PERUM (TIDAK BERUBAH - TETAP AMAN)
             await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 45000 });
             await new Promise(r => setTimeout(r, 1000));
 
-            // Isi form login web HA7304V
             if (await page.$('#a')) {
                 await page.type('#a', user);
                 await page.type('#b', pass);
@@ -136,11 +135,9 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await new Promise(r => setTimeout(r, 2000));
             }
 
-            // Langsung lompat ke url inti /m/onu_all_onu.htm sesuai Screenshot (822).jpg
             await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2', timeout: 45000 });
             await new Promise(r => setTimeout(r, 2000));
 
-            // Scrape data dari context halaman utama / mFrame
             const rxPowerResult = await page.evaluate((target) => {
                 const rows = Array.from(document.querySelectorAll('table tr'));
                 for (let row of rows) {
@@ -148,7 +145,6 @@ async function cekRedamanHioso(oltConfig, mac) {
                     if (cleanRowText.includes(target)) {
                         const tds = Array.from(row.querySelectorAll('td'));
                         if (tds.length > 0) {
-                            // Ambil hanya cell kolom yang berisi tanda minus (-) untuk menghindari temperatur
                             const cellRedaman = tds.find(td => td.innerText.trim().startsWith('-'));
                             if (cellRedaman) return cellRedaman.innerText.trim();
                         }
@@ -164,7 +160,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             }
 
         } else {
-            // 🚨 LOGIKA SEPERTI BIASA UNTUK OLT SUKAMELANG (HTTP Basic Auth + Iframe)
+            // 🚨 LOGIKA OLT SUKAMELANG & HIOSO LAINNYA (DIPERBAIKI)
             await page.authenticate({ username: user, password: pass });
             await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 45000 });
             await new Promise(r => setTimeout(r, 1500));
@@ -189,18 +185,32 @@ async function cekRedamanHioso(oltConfig, mac) {
             let mainFrame = mainFrames.find(f => f.name() === 'mainFrame' || f.name() === 'main' || f.url().includes('onu'));
             
             if (mainFrame) {
+                // 🚀 PERBAIKAN UTAMA: Menggunakan metode ekstraksi kolom td fleksibel seperti Perum agar Sukamelang lolos dari filter regex kaku
                 const rxPowerResult = await mainFrame.evaluate((target) => {
                     const rows = Array.from(document.querySelectorAll('table tr'));
                     for (let row of rows) {
                         if (row.innerText.replace(/[:.-]/g, '').toLowerCase().includes(target)) {
+                            const tds = Array.from(row.querySelectorAll('td'));
+                            if (tds.length > 0) {
+                                // Ambil cell yang memiliki nilai minus (-) untuk redaman optik
+                                const cellRedaman = tds.find(td => td.innerText.trim().startsWith('-') || td.innerText.trim().includes('-'));
+                                if (cellRedaman) return cellRedaman.innerText.trim();
+                            }
+                            // Fallback regex jika terhalang spasi
                             const match = row.innerText.replace(/\s+/g, ' ').match(/-\d+\.\d+/);
-                            return match ? match[0] : null;
+                            if (match) return match[0];
                         }
                     }
                     return null;
                 }, cleanTargetMac);
 
-                if (rxPowerResult) finalResultData = { olt_name: oltConfig.label, redaman: `${rxPowerResult} dBm`, status: 'Online' };
+                if (rxPowerResult) {
+                    finalResultData = { 
+                        olt_name: oltConfig.label, 
+                        redaman: rxPowerResult.includes('dBm') ? rxPowerResult : `${rxPowerResult} dBm`, 
+                        status: 'Online' 
+                    };
+                }
             }
         }
 
