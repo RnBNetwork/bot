@@ -281,9 +281,12 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await new Promise(r => setTimeout(r, 3000));
             }
 
-            // 3. Akses halaman ONU
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await new Promise(r => setTimeout(r, 3000));
+            // 3. Akses halaman ONU dengan toleransi network yang lebih longgar (waitUntil: 'commit')
+            console.log(`   ⏳ Berpindah ke halaman detail ONU...`);
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'commit', timeout: 15000 }).catch(() => {
+                console.log(`   ℹ️ Navigasi commit melampaui batas, mencoba alternatif klik menu...`);
+            });
+            await new Promise(r => setTimeout(r, 5000)); // Berikan jeda waktu manual agar tabel sempat ter-render
             
             // Cek apakah ada frame
             let targetFrame = page;
@@ -297,9 +300,10 @@ async function cekRedamanHioso(oltConfig, mac) {
 
             console.log(`   ⏳ Menunggu data tabel dimuat...`);
             try {
-                await targetFrame.waitForSelector('table tr', { timeout: 20000 });
+                // Turunkan timeout tunggu tabel agar bot tidak hang permanen jika tabel kosong
+                await targetFrame.waitForSelector('table tr', { timeout: 10000 });
             } catch (err) {
-                console.log(`   ⚠️ Tabel tidak ditemukan: ${err.message}`);
+                console.log(`   ⚠️ Tabel tidak ditemukan atau lambat: ${err.message}`);
             }
 
             // Cari MAC dan redaman
