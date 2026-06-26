@@ -267,9 +267,12 @@ async function cekRedamanHioso(oltConfig, mac) {
         } else {
             console.log(`   Mode: HTTP Basic Auth + Direct URL (Single Login)`);
             
-            // 1. Akses halaman utama dulu untuk membangun sesi/cookie
-            await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await new Promise(r => setTimeout(r, 2000));
+            // 1. Akses halaman utama dengan toleransi 'commit' agar tidak memicu timeout jaringan OLT yang kaku
+            console.log(`   ⏳ Membuka halaman utama OLT...`);
+            await page.goto(baseUrl, { waitUntil: 'commit', timeout: 20000 }).catch(() => {
+                console.log(`   ℹ️ Mengabaikan batas load halaman utama, lanjut...`);
+            });
+            await new Promise(r => setTimeout(r, 3000));
 
             // 2. Cek apakah masih ada form login web
             if (await page.$('#a')) {
@@ -277,18 +280,18 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await page.type('#a', user);
                 await page.type('#b', pass);
                 await page.click('input[type="button"]');
-                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+                await page.waitForNavigation({ waitUntil: 'commit', timeout: 15000 }).catch(() => {});
                 await new Promise(r => setTimeout(r, 2000));
             }
 
-            // 3. Akses langsung htm induk
+            // 3. Akses langsung htm induk tabel ONU
             console.log(`   ⏳ Mengakses endpoint tabel ONU...`);
             await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
             
-            // Berikan jeda waktu agar request sw.cgi / uni_mars_ap selesai memuat tabel
+            // Berikan jeda waktu agar request sw.cgi selesai memuat tabel sepenuhnya
             await new Promise(r => setTimeout(r, 6000));
             
-            // Cari mainFrame tempat tabel di-render (berdasarkan screenshot DOM Anda)
+            // Cari mainFrame tempat tabel di-render berdasarkan target DOM
             const frames = page.frames();
             let targetFrame = frames.find(f => 
                 f.name() === 'mainFrame' || 
@@ -301,7 +304,7 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await targetFrame.waitForSelector('tr, table tr', { timeout: 5000 });
             } catch (err) {}
 
-            // Cari MAC menggunakan perbandingan murni (karakter alphanumeric saja)
+            // Bersihkan format MAC masukan agar menjadi 12 karakter murni (contoh: 28dee52c1279)
             const cleanTarget = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 12);
             console.log(`   🔍 Mencocokkan MAC murni: ${cleanTarget}`);
 
