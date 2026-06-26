@@ -206,7 +206,7 @@ async function cekRedamanHioso(oltConfig, mac) {
         return null;
     } catch (error) {
         return null;
-    } final {
+    } finally {
         await browser.close();
     }
 }
