@@ -219,29 +219,51 @@ async function cekRedamanHioso(oltConfig, mac) {
 }
 
 // ==========================================
-// 4. SCAN SEMUA OLT
+// 4. SCAN SEMUA OLT - REAL-TIME INSTANT REPLY
 // ==========================================
-async function scanSemuaOlt(oltList, mac) {
-    const hasilAkhir = [];
+async function scanSemuaOlt(oltList, mac, msg, userObj, targetServer) {
+    let ditemukan = false;
     const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
     const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
 
+    // 1. Scan OLT HSAirpo (Paralel)
     if (axiosOlts.length > 0) {
         const axiosPromises = axiosOlts.map(async (olt) => {
             let hasil = olt.method === 'cibarola' ? await cekRedamanHSAirpoCibarola(olt, mac) : await cekRedamanHSAirpoAPI(olt, mac);
-            if (hasil) hasilAkhir.push(`🖥️ *OLT:* ${hasil.olt_name}\n📉 *Redaman:* *${hasil.redaman}*\n📡 *Status:* ${hasil.status}`);
+            if (hasil) {
+                ditemukan = true;
+                // LANGSUNG KIRIM KE WHATSAPP DETIK INI JUGA
+                await msg.reply(
+                    `📌 *HASIL CEK REDAMAN OLT*\n\n` +
+                    `👤 *Pelanggan:* ${userObj.name}\n` +
+                    `💻 *Server:* ${targetServer.label}\n` +
+                    `🔒 *MAC:* \`${mac}\`\n\n` +
+                    `🖥️ *OLT:* ${hasil.olt_name}\n📉 *Redaman:* *${hasil.redaman}*\n📡 *Status:* ${hasil.status}`
+                ).catch(() => null);
+            }
         });
         await Promise.all(axiosPromises);
     }
 
+    // 2. Scan OLT Hioso (Sekuensial / Antrian)
     if (puppeteerOlts.length > 0) {
         for (const olt of puppeteerOlts) {
             const hasil = await cekRedamanHioso(olt, mac);
-            if (hasil) hasilAkhir.push(`🖥️ *OLT:* ${hasil.olt_name}\n📉 *Redaman:* *${hasil.redaman}*\n📡 *Status:* ${hasil.status}`);
+            if (hasil) {
+                ditemukan = true;
+                // LANGSUNG KIRIM KE WHATSAPP DETIK INI JUGA
+                await msg.reply(
+                    `📌 *HASIL CEK REDAMAN OLT*\n\n` +
+                    `👤 *Pelanggan:* ${userObj.name}\n` +
+                    `💻 *Server:* ${targetServer.label}\n` +
+                    `🔒 *MAC:* \`${mac}\`\n\n` +
+                    `🖥️ *OLT:* ${hasil.olt_name}\n📉 *Redaman:* *${hasil.redaman}*\n📡 *Status:* ${hasil.status}`
+                ).catch(() => null);
+            }
         }
     }
 
-    return hasilAkhir.length === 0 ? '⚠️ ONU tidak ditemukan' : hasilAkhir.join('\n\n');
+    return ditemukan;
 }
 
 module.exports = { scanSemuaOlt };
