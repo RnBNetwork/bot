@@ -281,50 +281,48 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await new Promise(r => setTimeout(r, 2000));
             }
 
-            // 3. Akses halaman ONU dengan toleransi network 'commit' (tidak menunggu full load render htm yang kaku)
+            // 3. Akses halaman ONU dengan toleransi network 'commit'
             console.log(`   ⏳ Mengakses endpoint tabel ONU...`);
             await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'commit', timeout: 15000 }).catch(() => {
                 console.log(`   ℹ️ Mengabaikan timeout htm kaku, lanjut memproses data...`);
             });
             
-            // Berikan jeda waktu agar request latar belakang (uni_mars_ap) selesai mengambil data ke tabel
+            // Jeda agar XMLHttpRequest (uni_mars_ap) selesai memuat data ke dalam frame
             await new Promise(r => setTimeout(r, 6000));
             
-            // Cek apakah ada frame internal
-            let targetFrame = page;
             const frames = page.frames();
-            if (frames.length > 1) {
-                targetFrame = frames.find(f => f.url().includes('onu')) || frames[1];
-                console.log(`   ✅ Frame ditemukan: ${frames.length} frames`);
-            } else {
-                console.log(`   ℹ️ Tidak ada frame, gunakan main page`);
-            }
+            console.log(`   ✅ Terdeteksi ${frames.length} frames. Menyisir semua frame...`);
 
-            console.log(`   ⏳ Menunggu data tabel dimuat...`);
-            try {
-                // Gunakan timeout rendah agar tidak hang jika tabel menggunakan script custom render
-                await targetFrame.waitForSelector('table tr', { timeout: 8000 });
-            } catch (err) {
-                console.log(`   ⚠️ Menembus pelindung render tabel OLT...`);
-            }
+            let rxPowerResult = null;
+            const cleanTarget = searchMac.replace(/[:.-]/g, '').toLowerCase();
 
-            // Cari MAC dan redaman langsung dari struktur DOM yang sudah ter-update oleh XMLHttpRequest
-            const rxPowerResult = await targetFrame.evaluate((macToFind) => {
-                const cleanTarget = macToFind.replace(/[:-]/g, '').toLowerCase();
-                const rows = Array.from(document.querySelectorAll('table tr, tr'));
-                
-                for (let row of rows) {
-                    const rowText = row.innerText.replace(/[:-]/g, '').toLowerCase();
-                    if (rowText.includes(cleanTarget)) {
-                        const cleanRowText = row.innerText.replace(/\s+/g, ' ').trim();
-                        // Pola pencarian angka minus desimal (Redaman dBm)
-                        const rxPattern = /(-\d+\.\d+)/;
-                        const match = cleanRowText.match(rxPattern);
-                        if (match) return match[1];
+            // Loop menyisir seluruh frame yang aktif untuk mencari data
+            for (let idx = 0; idx < frames.length; idx++) {
+                const f = frames[idx];
+                try {
+                    const hasilFrame = await f.evaluate((macToFind) => {
+                        const rows = Array.from(document.querySelectorAll('tr, td, table tr'));
+                        for (let row of rows) {
+                            const rowTextClean = row.innerText.replace(/[:.-]/g, '').toLowerCase();
+                            if (rowTextClean.includes(macToFind)) {
+                                const fullText = row.innerText.replace(/\s+/g, ' ').trim();
+                                const rxPattern = /(-\d+\.\d+)/; // Deteksi angka minus desimal (dBm)
+                                const match = fullText.match(rxPattern);
+                                if (match) return match[1];
+                            }
+                        }
+                        return null;
+                    }, cleanTarget);
+
+                    if (hasilFrame) {
+                        console.log(`   🎯 Ditemukan di Frame Indeks [${idx}]!`);
+                        rxPowerResult = hasilFrame;
+                        break; // Stop loop jika sudah ketemu
                     }
+                } catch (e) {
+                    // Abaikan error jika ada frame kosong/cross-origin
                 }
-                return null;
-            }, searchMac);
+            }
 
             if (rxPowerResult) {
                 console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
