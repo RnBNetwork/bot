@@ -1,4 +1,4 @@
-// oltService.js - ACCURATE MAC REGEX MATCH FOR HIOSO & HSAIRPO (WITHOUT LOGOUT BLOCK)
+// oltService.js - Original Base Version
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -49,7 +49,7 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
 }
 
 // ==========================================
-// 2. HSAirpo CIBAROLA (Axios API)
+// 2. HSAirpo CIBAROLA
 // ==========================================
 async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
     try {
@@ -103,9 +103,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
-    const isPerum = oltConfig.label.toLowerCase().includes('perum');
     
-    console.log(`\n🔍 [${oltConfig.label}] Memulai pemindaian via Puppeteer...`);
     const browser = await puppeteer.launch({
         headless: 'new',
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
@@ -123,99 +121,71 @@ async function cekRedamanHioso(oltConfig, mac) {
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
-        if (isPerum) {
-            await page.goto(baseUrl, { waitUntil: 'networkidle2' });
-            if (await page.$('#a')) {
-                await page.type('#a', user);
-                await page.type('#b', pass);
-                await page.click('input[type="button"]');
-                await new Promise(r => setTimeout(r, 1500));
-            }
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 1500));
-
-            const rxPowerResult = await page.evaluate((target) => {
-                const rows = Array.from(document.querySelectorAll('table tr'));
-                for (let row of rows) {
-                    const cleanRowText = row.innerText.replace(/[:.-]/g, '').toLowerCase();
-                    if (cleanRowText.includes(target)) {
-                        const tds = Array.from(row.querySelectorAll('td'));
-                        if (tds.length > 0) {
-                            const cellRedaman = tds.find(td => td.innerText.trim().startsWith('-'));
-                            if (cellRedaman) return cellRedaman.innerText.trim();
-                        }
-                        const match = row.innerText.replace(/\s+/g, ' ').match(/-\d+\.\d+/);
-                        if (match) return match[0];
-                    }
-                }
-                return null;
-            }, cleanTargetMac);
-
-            if (rxPowerResult) {
-                finalResultData = { olt_name: oltConfig.label, redaman: `${rxPowerResult} dBm`, status: 'Online' };
-            }
-
-        } else {
+        if (oltConfig.iframe) {
             await page.authenticate({ username: user, password: pass });
             await page.goto(baseUrl, { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 1500));
+            await new Promise(r => setTimeout(r, 1000));
 
             const frames = page.frames();
-            let leftFrame = frames.find(f => 
-                f.name() === 'leftFrame' || f.name() === 'menuFrame' ||
-                (f.url() && (f.url().includes('menu') || f.url().includes('left')))
-            );
-            
+            let leftFrame = frames.find(f => f.name() === 'leftFrame' || f.name() === 'menuFrame');
             if (leftFrame) {
                 await leftFrame.evaluate(() => {
                     const links = Array.from(document.querySelectorAll('a'));
                     const allOnuLink = links.find(link => link.innerText.trim().toLowerCase().includes('all onu'));
                     if (allOnuLink) allOnuLink.click();
-                }).catch(() => null);
-                await new Promise(r => setTimeout(r, 1500));
+                });
+                await new Promise(r => setTimeout(r, 1000));
             }
 
-            let targetContext = page;
-            const mainFrame = page.frames().find(f => f.name() === 'mainFrame' || f.name() === 'main' || f.url().includes('onu'));
-            if (mainFrame) targetContext = mainFrame;
+            let mainFrame = page.frames().find(f => f.name() === 'mainFrame' || f.name() === 'main');
+            if (mainFrame) {
+                const rxPowerResult = await mainFrame.evaluate((target) => {
+                    const rows = Array.from(document.querySelectorAll('table tr'));
+                    for (let row of rows) {
+                        if (row.innerText.replace(/[:.-]/g, '').toLowerCase().includes(target)) {
+                            const match = row.innerText.match(/-\d+\.\d+/);
+                            return match ? match[0] : null;
+                        }
+                    }
+                    return null;
+                }, cleanTargetMac);
 
-            const rxPowerResult = await targetContext.evaluate((target) => {
+                if (rxPowerResult) finalResultData = { olt_name: oltConfig.label, redaman: `${rxPowerResult} dBm`, status: 'Online' };
+            }
+        } else {
+            await page.goto(baseUrl, { waitUntil: 'networkidle2' });
+            if (await page.$('#a')) {
+                await page.type('#a', user);
+                await page.type('#b', pass);
+                await page.click('input[type="button"]');
+                await new Promise(r => setTimeout(r, 1000));
+            }
+
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2' });
+            const rxPowerResult = await page.evaluate((target) => {
                 const rows = Array.from(document.querySelectorAll('table tr'));
                 for (let row of rows) {
                     if (row.innerText.replace(/[:.-]/g, '').toLowerCase().includes(target)) {
-                        const tds = Array.from(row.querySelectorAll('td'));
-                        if (tds.length > 0) {
-                            const cellRedaman = tds.find(td => td.innerText.trim().startsWith('-') || td.innerText.trim().includes('-'));
-                            if (cellRedaman) return cellRedaman.innerText.trim();
-                        }
-                        const match = row.innerText.replace(/\s+/g, ' ').match(/-\d+\.\d+/);
-                        if (match) return match[0];
+                        const match = row.innerText.match(/-\d+\.\d+/);
+                        return match ? match[0] : null;
                     }
                 }
                 return null;
             }, cleanTargetMac);
 
-            if (rxPowerResult) {
-                finalResultData = { 
-                    olt_name: oltConfig.label, 
-                    redaman: rxPowerResult.includes('dBm') ? rxPowerResult : `${rxPowerResult} dBm`, 
-                    status: 'Online' 
-                };
-            }
+            if (rxPowerResult) finalResultData = { olt_name: oltConfig.label, redaman: `${rxPowerResult} dBm`, status: 'Online' };
         }
 
     } catch (error) {
-        console.error(`   ❌ Error OLT [${oltConfig.label}]: ${error.message}`);
+        console.error(`❌ Error OLT [${oltConfig.label}]: ${error.message}`);
     } finally {
-        if (browser) {
-            await browser.close().catch(() => null);
-        }
+        if (browser) await browser.close();
         return finalResultData;
     }
 }
 
 // ==========================================
-// 4. SCAN SEMUA OLT
+// 4. SCAN ALL OLTS
 // ==========================================
 async function scanSemuaOlt(oltList, mac, msg, userObj, targetServer) {
     let ditemukan = false;
@@ -227,13 +197,7 @@ async function scanSemuaOlt(oltList, mac, msg, userObj, targetServer) {
             let hasil = olt.method === 'cibarola' ? await cekRedamanHSAirpoCibarola(olt, mac) : await cekRedamanHSAirpoAPI(olt, mac);
             if (hasil) {
                 ditemukan = true;
-                await msg.reply(
-                    `📌 *HASIL CEK REDAMAN OLT*\n\n` +
-                    `👤 *Pelanggan:* ${userObj.name}\n` +
-                    `💻 *Server:* ${targetServer.label}\n` +
-                    `🔒 *MAC:* \`${mac}\`\n\n` +
-                    `🖥️ *OLT:* ${hasil.olt_name}\n📉 *Redaman:* *${hasil.redaman}*\n📡 *Status:* ${hasil.status}`
-                ).catch(() => null);
+                await msg.reply(`📌 *HASIL CEK REDAMAN OLT*\n\n👤 Pelanggan: ${userObj.name}\n💻 Server: ${targetServer.label}\n🔒 MAC: \`${mac}\`\n\n🖥️ OLT: ${hasil.olt_name}\n📉 Redaman: *${hasil.redaman}*\n📡 Status: ${hasil.status}`).catch(() => null);
             }
         });
         await Promise.all(axiosPromises);
@@ -244,17 +208,10 @@ async function scanSemuaOlt(oltList, mac, msg, userObj, targetServer) {
             const hasil = await cekRedamanHioso(olt, mac);
             if (hasil) {
                 ditemukan = true;
-                await msg.reply(
-                    `📌 *HASIL CEK REDAMAN OLT*\n\n` +
-                    `👤 *Pelanggan:* ${userObj.name}\n` +
-                    `💻 *Server:* ${targetServer.label}\n` +
-                    `🔒 *MAC:* \`${mac}\`\n\n` +
-                    `🖥️ *OLT:* ${hasil.olt_name}\n📉 *Redaman:* *${hasil.redaman}*\n📡 *Status:* ${hasil.status}`
-                ).catch(() => null);
+                await msg.reply(`📌 *HASIL CEK REDAMAN OLT*\n\n👤 Pelanggan: ${userObj.name}\n💻 Server: ${targetServer.label}\n🔒 MAC: \`${mac}\`\n\n🖥️ OLT: ${hasil.olt_name}\n📉 Redaman: *${hasil.redaman}*\n📡 Status: ${hasil.status}`).catch(() => null);
             }
         }
     }
-
     return ditemukan;
 }
 
