@@ -271,7 +271,7 @@ async function cekRedamanHioso(oltConfig, mac) {
             await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
             await new Promise(r => setTimeout(r, 2000));
 
-            // 2. Cek apakah masih ada form login web (beberapa OLT punya double auth)
+            // 2. Cek apakah masih ada form login web
             if (await page.$('#a')) {
                 console.log(`   🔑 Mengisi form login web...`);
                 await page.type('#a', user);
@@ -281,54 +281,51 @@ async function cekRedamanHioso(oltConfig, mac) {
                 await new Promise(r => setTimeout(r, 2000));
             }
 
-            // 3. Akses halaman ONU dengan toleransi network 'commit'
+            // 3. Akses langsung htm induk
             console.log(`   ⏳ Mengakses endpoint tabel ONU...`);
-            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'commit', timeout: 15000 }).catch(() => {
-                console.log(`   ℹ️ Mengabaikan timeout htm kaku, lanjut memproses data...`);
-            });
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
             
-            // Jeda agar XMLHttpRequest (uni_mars_ap) selesai memuat data ke dalam frame
+            // Berikan jeda waktu agar request sw.cgi / uni_mars_ap selesai memuat tabel
             await new Promise(r => setTimeout(r, 6000));
             
+            // Cari mainFrame tempat tabel di-render (berdasarkan screenshot DOM Anda)
             const frames = page.frames();
-            console.log(`   ✅ Terdeteksi ${frames.length} frames. Menyisir semua frame...`);
+            let targetFrame = frames.find(f => 
+                f.name() === 'mainFrame' || 
+                f.name() === 'myiframe2' || 
+                f.url().includes('onu')
+            ) || page;
 
-            let rxPowerResult = null;
-            const cleanTarget = searchMac.replace(/[:.-]/g, '').toLowerCase();
+            console.log(`   ⏳ Menunggu data tabel di frame target dimuat...`);
+            try {
+                await targetFrame.waitForSelector('tr, table tr', { timeout: 5000 });
+            } catch (err) {}
 
-            // Loop menyisir seluruh frame yang aktif untuk mencari data
-            for (let idx = 0; idx < frames.length; idx++) {
-                const f = frames[idx];
-                try {
-                    const hasilFrame = await f.evaluate((macToFind) => {
-                        const rows = Array.from(document.querySelectorAll('tr, td, table tr'));
-                        for (let row of rows) {
-                            const rowTextClean = row.innerText.replace(/[:.-]/g, '').toLowerCase();
-                            if (rowTextClean.includes(macToFind)) {
-                                const fullText = row.innerText.replace(/\s+/g, ' ').trim();
-                                const rxPattern = /(-\d+\.\d+)/; // Deteksi angka minus desimal (dBm)
-                                const match = fullText.match(rxPattern);
-                                if (match) return match[1];
-                            }
-                        }
-                        return null;
-                    }, cleanTarget);
+            // Cari MAC menggunakan perbandingan murni (karakter alphanumeric saja)
+            const cleanTarget = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 12);
+            console.log(`   🔍 Mencocokkan MAC murni: ${cleanTarget}`);
 
-                    if (hasilFrame) {
-                        console.log(`   🎯 Ditemukan di Frame Indeks [${idx}]!`);
-                        rxPowerResult = hasilFrame;
-                        break; // Stop loop jika sudah ketemu
+            const rxPowerResult = await targetFrame.evaluate((macToFind) => {
+                const rows = Array.from(document.querySelectorAll('tr, table tr'));
+                
+                for (let row of rows) {
+                    const rowTextClean = row.innerText.replace(/[:.-]/g, '').toLowerCase();
+                    if (rowTextClean.includes(macToFind)) {
+                        const fullText = row.innerText.replace(/\s+/g, ' ').trim();
+                        // Mengambil angka minus desimal (dBm)
+                        const rxPattern = /(-\d+\.\d+)/;
+                        const match = fullText.match(rxPattern);
+                        if (match) return match[1];
                     }
-                } catch (e) {
-                    // Abaikan error jika ada frame kosong/cross-origin
                 }
-            }
+                return null;
+            }, cleanTarget);
 
             if (rxPowerResult) {
                 console.log(`   ✅ Ditemukan! Redaman: ${rxPowerResult} dBm`);
                 return { 
                     olt_name: oltConfig.label, 
-                    mac_onu: searchMac, 
+                    mac_onu: mac, 
                     redaman: `${rxPowerResult} dBm`, 
                     status: 'Online' 
                 };
