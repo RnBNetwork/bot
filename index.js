@@ -1,4 +1,4 @@
-// index.js - RnBNET BOT (Public Access - Anti-Hang MikroTik)
+// index.js - RnBNET BOT (1 Message Only & Clean Version)
 const path = require('path');
 const express = require('express');
 const qrcode = require('qrcode');
@@ -28,37 +28,8 @@ const client = new Client({
     }
 });
 
-// ==================================================
-// SISTEM ANTREAN ANTI-BENTROK (QUEUE SYSTEM)
-// ==================================================
-const commandQueue = [];
-let isBotBusy = false; // Flag penanda jika bot sedang memproses perintah
-
-async function jalankanAntrean() {
-    // Jika bot sedang sibuk atau antrean kosong, hentikan eksekusi sementara
-    if (isBotBusy || commandQueue.length === 0) return;
-
-    // Kunci status bot menjadi sibuk
-    isBotBusy = true;
-    
-    // Ambil permintaan pertama keluar dari antrean (FIFO)
-    const { msg, executeFn } = commandQueue.shift();
-
-    try {
-        // Jalankan perintah utama secara bergantian
-        await executeFn();
-    } catch (error) {
-        console.error("❌ Error dalam eksekusi antrean:", error);
-    } finally {
-        // Buka kembali kunci kesibukan bot
-        isBotBusy = false;
-        // Beri jeda 1.5 detik sebelum memproses antrean berikutnya agar resource RAM/Koneksi bersih
-        setTimeout(jalankanAntrean, 1500);
-    }
-}
-
 // ==========================================
-// 3. EVENT LISTENER CLIENT WA
+// 3. EVENT LISTENER
 // ==========================================
 console.log('🤖 BOT STARTING...');
 client.on('qr', async (qr) => {
@@ -128,7 +99,7 @@ async function safeCloseMikrotik(api) {
 }
 
 // ==========================================
-// 5. MESSAGE HANDLER (DENGAN ANTRIAN OTOMATIS)
+// 5. MESSAGE HANDLER (PUBLIC ACCESS)
 // ==========================================
 client.on('message_create', async (msg) => {
     try {
@@ -164,28 +135,10 @@ client.on('message_create', async (msg) => {
                 return;
             }
 
-            console.log(`\n📨 [REQUEST MASUK] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username}`);
+            console.log(`\n📨 [REQUEST] Dari: ${msg.from} | Perintah: ${command} ${serverKey} ${username}`);
 
-            // Masukkan tugas pengecekan/aktivasi ke dalam Antrean Array
-            commandQueue.push({
-                msg: msg,
-                executeFn: async () => {
-                    if (command === '!cek') await handleCekRedaman(msg, serverKey, username);
-                    else if (command === '!aktifkan') await handleAktivasi(msg, serverKey, username);
-                }
-            });
-
-            // Jika bot sedang memproses HP lain, beri tahu nomor antreannya saat ini
-            if (isBotBusy) {
-                await msg.reply(
-                    `⏳ *[ANTREAN BOT RnB]*\n\n` +
-                    `Bot sedang memproses permintaan dari HP rekan Anda agar tidak *hang/bentrok*.\n` +
-                    `Permintaan Anda berada di *Antrean #${commandQueue.length}* dan diproses otomatis saat gilirannya tiba.`
-                );
-            }
-
-            // Pemicu jalankan mesin antrean
-            jalankanAntrean();
+            if (command === '!cek') await handleCekRedaman(msg, serverKey, username);
+            else if (command === '!aktifkan') await handleAktivasi(msg, serverKey, username);
         }
 
     } catch (err) {
@@ -195,7 +148,7 @@ client.on('message_create', async (msg) => {
 });
 
 // ==========================================
-// 6. HANDLER CEK REDAMAN
+// 6. HANDLER CEK REDAMAN (SILENT BACKGROUND)
 // ==========================================
 async function handleCekRedaman(msg, serverKey, username) {
     let api;
@@ -203,7 +156,7 @@ async function handleCekRedaman(msg, serverKey, username) {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
         
-        await msg.reply(`🔍 Mencari *${username}* di MikroTik *${targetServer.label}*...`);
+        console.log(`🔍 Mencari *${username}* di MikroTik *${targetServer.label}*...`);
         const userObj = await getUserFromMikrotik(api, username);
         
         let rawMac = userObj['caller-id'] || 'Any';
@@ -216,18 +169,27 @@ async function handleCekRedaman(msg, serverKey, username) {
         }
 
         const mac = rawMac.trim().toLowerCase();
-        await msg.reply(`📡 *MAC Ditemukan:*\n\`${mac}\`\n\n_Menyisir OLT di cabang ${targetServer.label} secara real-time..._`);
+        console.log(`📡 MAC Ditemukan: ${mac} | Menyisir OLT...`);
 
-        // Kita teruskan variabel 'msg' ke fungsi scanSemuaOlt agar bisa streaming langsung ke WA pembaca
-        const hasilOlt = await scanSemuaOlt(targetServer.olts, mac, msg);
+        const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
         
-        await msg.reply(
-            `📊 *Hasil Akhir Cek Redaman OLT*\n\n` +
-            `👤 *Pelanggan:* ${username}\n` +
-            `💻 *Server:* ${targetServer.label}\n` +
-            `🔒 *MAC:* \`${mac}\`\n\n` +
-            `${hasilOlt}`
-        );
+        // Kirim 1 pesan utuh di akhir jika ditemukan, atau infokan jika tidak ada
+        if (!hasilOlt || hasilOlt.startsWith('⚠️')) {
+            await msg.reply(
+                `⚠️ *ONU Tidak Ditemukan*\n\n` +
+                `👤 *Pelanggan:* ${username}\n` +
+                `💻 *Server:* ${targetServer.label}\n` +
+                `🔒 *MAC:* \`${mac}\``
+            );
+        } else {
+            await msg.reply(
+                `📌 *OLT DITEMUKAN*\n\n` +
+                `👤 *Pelanggan:* ${username}\n` +
+                `💻 *Server:* ${targetServer.label}\n` +
+                `🔒 *MAC:* \`${mac}\`\n\n` +
+                `${hasilOlt}`
+            );
+        }
 
     } catch (err) {
         await msg.reply(`❌ *Gagal Cek Redaman*\n\n${err.message}`);
@@ -237,7 +199,7 @@ async function handleCekRedaman(msg, serverKey, username) {
 }
 
 // ==========================================
-// 7. HANDLER AKTIVASI
+// 7. HANDLER AKTIVASI (SILENT BACKGROUND)
 // ==========================================
 async function handleAktivasi(msg, serverKey, username) {
     let api;
@@ -245,8 +207,7 @@ async function handleAktivasi(msg, serverKey, username) {
         const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
         api = mikrotikApi;
         
-        await msg.reply(`⏳ *Memproses Open Isolir*\n\n👤 User: ${username}\n💻 Server: ${targetServer.label}\n\n_Mohon tunggu..._`);
-        
+        console.log(`⏳ Memproses Open Isolir | User: ${username} | Server: ${targetServer.label}`);
         const userObj = await getUserFromMikrotik(api, username);
         
         await withTimeout(
@@ -267,32 +228,39 @@ async function handleAktivasi(msg, serverKey, username) {
             rawMac = activeUser['caller-id'] || rawMac;
         }
 
-        let report = 
-            `✨ *RnB Network - Aktivasi Sukses*\n\n` +
-            `✅ *Status:* BERHASIL\n` +
-            `👤 *Pelanggan:* ${username}\n` +
-            `🛜 *Paket:* ${paket}\n` +
-            `💻 *Server:* ${targetServer.label}\n` +
-            `🌐 *IP:* ${ip}\n` +
-            `🔒 *MAC Asli:* \`${rawMac}\`\n`;
-
         if (rawMac && rawMac !== 'Any') {
             const mac = rawMac.trim().toLowerCase();
-            report += `✂️ *MAC OLT:* \`${mac}\`\n\n🔍 _Menyisir OLT otomatis secara real-time..._`;
-            await msg.reply(report);
+            const hasilOlt = await scanSemuaOlt(targetServer.olts, mac);
             
-            // Kita teruskan variabel 'msg' ke fungsi scanSemuaOlt agar bisa streaming langsung ke WA pembaca
-            const hasilOlt = await scanSemuaOlt(targetServer.olts, mac, msg);
-            await msg.reply(
-                `✨ *RnB Network - Final Report*\n\n` +
+            let finalReport = 
+                `✨ *RnB Network - Aktivasi Sukses*\n\n` +
+                `✅ *Status:* BERHASIL\n` +
                 `👤 *Pelanggan:* ${username}\n` +
+                `🛜 *Paket:* ${paket}\n` +
                 `💻 *Server:* ${targetServer.label}\n` +
-                `🔒 *MAC OLT:* \`${mac}\`\n\n` +
-                `${hasilOlt}`
-            );
+                `🌐 *IP:* ${ip}\n` +
+                `🔒 *MAC:* \`${mac}\`\n\n`;
+
+            if (!hasilOlt || hasilOlt.startsWith('⚠️')) {
+                finalReport += `⚠️ _ONU tidak ditemukan di OLT manapun pada cabang ini._`;
+            } else {
+                finalReport += `📌 *Detail OLT:*\n${hasilOlt}`;
+            }
+            
+            // Kirim hanya 1 pesan gabungan di akhir
+            await msg.reply(finalReport);
         } else {
-            report += `\n⚠️ _Pengecekan OLT dilewati karena MAC tidak terbaca._`;
-            await msg.reply(report);
+            let finalReport = 
+                `✨ *RnB Network - Aktivasi Sukses*\n\n` +
+                `✅ *Status:* BERHASIL\n` +
+                `👤 *Pelanggan:* ${username}\n` +
+                `🛜 *Paket:* ${paket}\n` +
+                `💻 *Server:* ${targetServer.label}\n` +
+                `🌐 *IP:* ${ip}\n` +
+                `🔒 *MAC Asli:* \`${rawMac}\`\n\n` +
+                `⚠️ _Pengecekan OLT dilewati karena MAC tidak terbaca._`;
+                
+            await msg.reply(finalReport);
         }
     } catch (err) {
         await msg.reply(`❌ *Gagal Aktivasi*\n\n${err.message}`);
