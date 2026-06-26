@@ -99,12 +99,13 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 // ==========================================
-// 3. HIOSO PUPPETEER (SAMA DENGAN SUKAMELANG)
+// 3. HIOSO PUPPETEER (DENGAN AKURASI SPEKTRO PERUM VS SUKAMELANG)
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
     const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
+    const isPerum = oltConfig.label.toLowerCase().includes('perum');
     
-    console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Puppeteer - Sukamelang Method)...`);
+    console.log(`\n🔍 [${oltConfig.label}] Memulai pemindaian via Puppeteer...`);
     const browser = await puppeteer.launch({
         headless: 'new',
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
@@ -122,49 +123,84 @@ async function cekRedamanHioso(oltConfig, mac) {
         const user = oltConfig.user || 'admin';
         const pass = oltConfig.pass || 'admin';
 
-        await page.authenticate({ username: user, password: pass });
-        await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 45000 });
-        await new Promise(r => setTimeout(r, 1500));
+        if (isPerum) {
+            // 🚨 LOGIKA UTAMA OLT PERUM (HA7304V Form Login)
+            await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 45000 });
+            await new Promise(r => setTimeout(r, 1000));
 
-        // 🚀 SEMUA MENGGUNAKAN JALUR IFRAME (Metode Sukamelang yang terbukti bagus)
-        const frames = page.frames();
-        let leftFrame = frames.find(f => 
-            f.name() === 'leftFrame' || f.name() === 'menuFrame' ||
-            (f.url() && (f.url().includes('menu') || f.url().includes('left')))
-        );
-        
-        if (leftFrame) {
-            await leftFrame.waitForSelector('a', { timeout: 10000 });
-            await leftFrame.evaluate(() => {
-                const links = Array.from(document.querySelectorAll('a'));
-                const allOnuLink = links.find(link => link.innerText.trim().toLowerCase().includes('all onu'));
-                if (allOnuLink) allOnuLink.click();
-            });
-            await new Promise(r => setTimeout(r, 1500));
-        }
+            // Isi form login web HA7304V
+            if (await page.$('#a')) {
+                await page.type('#a', user);
+                await page.type('#b', pass);
+                await page.click('input[type="button"]');
+                await new Promise(r => setTimeout(r, 2000));
+            }
 
-        const mainFrames = page.frames();
-        let mainFrame = mainFrames.find(f => f.name() === 'mainFrame' || f.name() === 'main' || f.url().includes('onu'));
-        
-        if (mainFrame) {
-            const rxPowerResult = await mainFrame.evaluate((target) => {
+            // Langsung lompat ke url inti /m/onu_all_onu.htm sesuai Screenshot (822).jpg
+            await page.goto(`${baseUrl}/m/onu_all_onu.htm`, { waitUntil: 'networkidle2', timeout: 45000 });
+            await new Promise(r => setTimeout(r, 2000));
+
+            // Scrape data dari context halaman utama / mFrame
+            const rxPowerResult = await page.evaluate((target) => {
                 const rows = Array.from(document.querySelectorAll('table tr'));
                 for (let row of rows) {
-                    if (row.innerText.replace(/[:.-]/g, '').toLowerCase().includes(target)) {
-                        // Kunci filter: Wajib diawali tanda minus (-) agar temperatur tidak ikut terbaca
+                    const cleanRowText = row.innerText.replace(/[:.-]/g, '').toLowerCase();
+                    if (cleanRowText.includes(target)) {
+                        const tds = Array.from(row.querySelectorAll('td'));
+                        if (tds.length > 0) {
+                            // Ambil hanya cell kolom yang berisi tanda minus (-) untuk menghindari temperatur
+                            const cellRedaman = tds.find(td => td.innerText.trim().startsWith('-'));
+                            if (cellRedaman) return cellRedaman.innerText.trim();
+                        }
                         const match = row.innerText.replace(/\s+/g, ' ').match(/-\d+\.\d+/);
-                        return match ? match[0] : null;
+                        if (match) return match[0];
                     }
                 }
                 return null;
             }, cleanTargetMac);
 
             if (rxPowerResult) {
-                finalResultData = { 
-                    olt_name: oltConfig.label, 
-                    redaman: `${rxPowerResult} dBm`, 
-                    status: 'Online' 
-                };
+                finalResultData = { olt_name: oltConfig.label, redaman: `${rxPowerResult} dBm`, status: 'Online' };
+            }
+
+        } else {
+            // 🚨 LOGIKA SEPERTI BIASA UNTUK OLT SUKAMELANG (HTTP Basic Auth + Iframe)
+            await page.authenticate({ username: user, password: pass });
+            await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 45000 });
+            await new Promise(r => setTimeout(r, 1500));
+
+            const frames = page.frames();
+            let leftFrame = frames.find(f => 
+                f.name() === 'leftFrame' || f.name() === 'menuFrame' ||
+                (f.url() && (f.url().includes('menu') || f.url().includes('left')))
+            );
+            
+            if (leftFrame) {
+                await leftFrame.waitForSelector('a', { timeout: 10000 });
+                await leftFrame.evaluate(() => {
+                    const links = Array.from(document.querySelectorAll('a'));
+                    const allOnuLink = links.find(link => link.innerText.trim().toLowerCase().includes('all onu'));
+                    if (allOnuLink) allOnuLink.click();
+                });
+                await new Promise(r => setTimeout(r, 1500));
+            }
+
+            const mainFrames = page.frames();
+            let mainFrame = mainFrames.find(f => f.name() === 'mainFrame' || f.name() === 'main' || f.url().includes('onu'));
+            
+            if (mainFrame) {
+                const rxPowerResult = await mainFrame.evaluate((target) => {
+                    const rows = Array.from(document.querySelectorAll('table tr'));
+                    for (let row of rows) {
+                        if (row.innerText.replace(/[:.-]/g, '').toLowerCase().includes(target)) {
+                            const match = row.innerText.replace(/\s+/g, ' ').match(/-\d+\.\d+/);
+                            return match ? match[0] : null;
+                        }
+                    }
+                    return null;
+                }, cleanTargetMac);
+
+                if (rxPowerResult) finalResultData = { olt_name: oltConfig.label, redaman: `${rxPowerResult} dBm`, status: 'Online' };
             }
         }
 
@@ -175,8 +211,11 @@ async function cekRedamanHioso(oltConfig, mac) {
             try {
                 const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
                 console.log(`   🚪 [${oltConfig.label}] Memutus Sesi (Strict Logging Out)...`);
-                await page.goto(`${baseUrl}/logout`, { waitUntil: 'domcontentloaded', timeout: 500 }).catch(() => null);
-                await page.goto(`${baseUrl}/m/logout.htm`, { waitUntil: 'domcontentloaded', timeout: 500 }).catch(() => null);
+                if (isPerum) {
+                    await page.goto(`${baseUrl}/m/logout.htm`, { waitUntil: 'domcontentloaded', timeout: 1000 }).catch(() => null);
+                } else {
+                    await page.goto(`${baseUrl}/logout`, { waitUntil: 'domcontentloaded', timeout: 1000 }).catch(() => null);
+                }
                 await new Promise(r => setTimeout(r, 500));
             } catch (e) {}
         }
