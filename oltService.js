@@ -1,4 +1,4 @@
-// oltService.js - ACCURATE MAC REGEX MATCH & OPTIMIZED PUPPETEER WITH LOOSE TIMEOUT
+// oltService.js - ACCURATE MAC REGEX MATCH & OPTIMIZED PUPPETEER WITH AUTO-LOGOUT
 const axios = require('axios');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
@@ -8,9 +8,7 @@ const puppeteer = require('puppeteer');
 // ==========================================
 async function cekRedamanHSAirpoAPI(oltConfig, mac) {
     try {
-        // Ambil 10 karakter pertama murni (membuang 2 karakter ujung)
         const cleanTarget = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
-
         const username = oltConfig.user || 'root';
         const password = oltConfig.pass || 'admin';
         const key = crypto.createHash('md5').update(`${username}:${password}`).digest('hex');
@@ -55,7 +53,6 @@ async function cekRedamanHSAirpoAPI(oltConfig, mac) {
 // ==========================================
 async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
     try {
-        // Ambil 10 karakter pertama murni (membuang 2 karakter ujung)
         const cleanTarget = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
         const passwordBase64 = Buffer.from(oltConfig.pass || 'admin').toString('base64');
         const loginRes = await axios.post(
@@ -105,7 +102,6 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 // 3. HIOSO PUPPETEER (PERUM & SUKAMELANG 4PON)
 // ==========================================
 async function cekRedamanHioso(oltConfig, mac) {
-    // Menghapus separator dan mengambil 10 karakter awal murni (potong 2 karakter di ujung)
     const cleanTargetMac = mac.replace(/[:.-]/g, '').toLowerCase().substring(0, 10);
     
     console.log(`\n🔍 [${oltConfig.label}] Mulai cek (Puppeteer)...`);
@@ -116,10 +112,11 @@ async function cekRedamanHioso(oltConfig, mac) {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     });
 
+    let page; // Deklarasikan di luar agar bisa diakses di blok finally
+
     try {
-        const page = await browser.newPage();
+        page = await browser.newPage();
         
-        // Timeout dinaikkan menjadi 45 detik agar tidak mudah putus saat OLT merespons lambat
         page.setDefaultTimeout(45000);
         page.setDefaultNavigationTimeout(45000);
 
@@ -245,7 +242,23 @@ async function cekRedamanHioso(oltConfig, mac) {
         console.error(`   ❌ Error: ${error.message}`);
         return { error: error.message };
     } finally {
-        // DI SINI SUDAH FIXED 'finally' (bukan finaly/final)
+        // 🚀 PROSES FORCE LOGOUT SEBELUM BROWSER CLOSE
+        if (page) {
+            try {
+                const baseUrl = `http://${oltConfig.ip}:${oltConfig.port}`;
+                console.log(`   🚪 Membersihkan sesi OLT (Logging out)...`);
+                
+                if (oltConfig.iframe) {
+                    // Jalankan fungsi logout bawaan sistem iframe hioso jika ada
+                    await page.goto(`${baseUrl}/logout`, { waitUntil: 'domcontentloaded', timeout: 4000 }).catch(() => null);
+                } else {
+                    // Jalankan halaman pemutus sesi hioso non-iframe
+                    await page.goto(`${baseUrl}/m/logout.htm`, { waitUntil: 'domcontentloaded', timeout: 4000 }).catch(() => null);
+                }
+            } catch (e) {
+                // acuhkan jika gagal, yang utama browser harus tetap close bersih
+            }
+        }
         await browser.close();
     }
 }
@@ -262,7 +275,6 @@ async function scanSemuaOlt(oltList, mac) {
     const axiosOlts = oltList.filter(o => o.type === 'HSAirpo');
     const puppeteerOlts = oltList.filter(o => o.type === 'Hioso');
 
-    // Scan OLT HSAirpo (Berjalan Paralel)
     if (axiosOlts.length > 0) {
         const axiosPromises = axiosOlts.map(async (olt) => {
             let hasil = olt.method === 'cibarola' ? await cekRedamanHSAirpoCibarola(olt, mac) : await cekRedamanHSAirpoAPI(olt, mac);
@@ -273,7 +285,6 @@ async function scanSemuaOlt(oltList, mac) {
         await Promise.all(axiosPromises);
     }
 
-    // Scan OLT Hioso (Berjalan Sekuensial teratur dalam antrian)
     if (puppeteerOlts.length > 0) {
         for (const olt of puppeteerOlts) {
             const hasil = await cekRedamanHioso(olt, mac);
